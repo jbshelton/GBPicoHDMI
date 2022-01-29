@@ -1,0 +1,20 @@
+// Captures the LCD data.
+// LCD data is from GP0 to GP14, while pixel clock is GP15 and horizontal sync is GP16.
+// Horizontal sync and pixel clock need to be low in order to shift in one pixel.
+// Shifts in LCD data to the right.
+// PINCTRL_IN_BASE = 0
+.program lcd_capture
+
+public entry_point:
+.wrap_target
+	wait 0 gpio 16
+	wait 0 gpio 15
+	in pins, 15
+	in NULL, 1
+	wait 1 gpio 15
+	wait 0 gpio 16
+	wait 0 gpio 15
+	in pins, 15
+	in NULL, 1
+	push
+.wrap
