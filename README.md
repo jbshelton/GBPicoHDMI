@@ -14,9 +14,9 @@ I think this project may be the largest/most complex project I've taken on aside
 ---
 
 ### Documentation
-Documentation about my journey and the info I gathered to make this project possible can be found in the `src` folder\. Since this is a relatively new project, I will be updating it frequently\. As of now, there isn't anything, but like I already said, I'll update it as I make more progress\.
+Documentation about my journey and the info I gathered to make this project possible can be found in the `docs` folder\. Since this is a relatively new project, I will be updating it frequently\.
 
 ---
 
 ### When's it going to be finished?
-I don't know when I'm going to finish this project, or IF I'm going to finish this project, since I have a habit of starting big projects and never really following through with them\. However, if someone with more knowledge about ARM assembly programming and the Raspberry Pi Pico/RP2040 wants to help, then this project may become a reality in the near\(ish\) future\!
+I don't know when I'm going to finish this project, but I predict that it's going to take a few months to get it fully working\. However, I will get some parts of it working one by one, and I might even upload progress clips to YouTube and put the links here\.

@@ -1,5 +1,5 @@
 // Vertical sync capture re-sync code
-// Sends something (NULL data at this point) through the FIFO to initiate a DMA transfer to reset the input buffer position.
+// Sends something (NULL data or all $FF at this point) through the FIFO to initiate a DMA transfer to reset the input buffer position.
 // GPIO pin currently undefined, currently referred to with alias 'V'.
 // I forget what the vsync pulse polarity is, so the wait pin may need to be changed.
 .program vsync_interruptor

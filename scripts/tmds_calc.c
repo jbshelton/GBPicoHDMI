@@ -8,6 +8,51 @@
 	TO DO:
 	-Add TMDS control word LUT/generation
 	-Add TMDS audio LUT generation
+
+	Traditionally:
+	-Separate color channels from shared word into different words (1 pixel only)
+	-Get results individually
+	-Convert into TMDS individually and put into different buffers one at a time
+
+	Variables needed per channel: raw color data, last TMDS data, TMDS data buffer address
+	Universal variables needed: raw pixel data, framebuffer address
+	Total predicted registers used for video encoding: 11
+	pix = fbuffer[fbaddr++];
+
+	raw_r = pix&0xff, pix>>=8;
+	raw_r |= (last_r&0x1f000000)>>16; //2 instructions?
+	last_r = tmds_lut[raw_r];
+	rbuffer[raddr++] = last_r; //2 instructions?
+
+	raw_g = pix&0xff, pix>>=8;
+	raw_g |= (last_g&0x1f000000)>>16;
+	last_g = tmds_lut[raw_g];
+	gbuffer[gaddr++] = last_g;
+
+	raw_b = pix;
+	raw_b |= (last_b&0x1f000000)>>16;
+	last_b = tmds_lut[raw_b];
+	bbuffer[baddr++] = last_b;
+
+	6 instructions per channel = 18 instructions per pixel
+
+	Or do this (assuming 24bpp input):
+	pix = fbuffer[fbaddr++]; //This is done for however wide the framebuffer is horizontally, then the line buffer is used
+	raw_cc = pix&0xff, pix>>=8;
+	lbuffer[lbaddr++] = pix; //This is repeated for horizontal width and then reset
+	raw_cc |= (cc_tmds&0x1f000000)>>16; //cc_tmds is init'd to zero
+	cc_tmds = tmds_lut[raw_cc];
+	tlbuffer[tladdr++] = cc_tmds;
+
+	On the other 2 color channels:
+	lbaddr = 0;
+	loop point:
+	pix = lbuffer[lbaddr++];
+	raw_cc = pix&0xff, pix>>=8;
+	lbuffer[lbaddr++] = pix;
+	raw_cc |= (cc_tmds&0x1f000000)>>16;
+	cc_tmds = tmds_lut[raw_cc];
+	tlbuffer[tladdr++] = cc_tmds;
 */
 #include <stdio.h>
 #include <stdlib.h>
@@ -40,7 +85,7 @@ uint32_t tmds_interleave(uint16_t tmds_data, int disparity)
 }
 
 //little endian
-uint16_t tmds_xor(uint8_t color_data);
+uint16_t tmds_xor(uint8_t color_data)
 {
 	uint16_t this_color = (uint16_t)color_data;
 	uint16_t tmds_word = (this_color&0x01)<<14;
@@ -58,7 +103,7 @@ uint16_t tmds_xor(uint8_t color_data);
 	return tmds_word;
 }
 
-uint16_t tmds_xnor(uint8_t color_data);
+uint16_t tmds_xnor(uint8_t color_data)
 {
 	uint16_t this_color = (uint16_t)color_data;
 	uint16_t tmds_word = (this_color&0x01)<<14;
@@ -75,13 +120,17 @@ uint16_t tmds_xnor(uint8_t color_data);
 	return tmds_word;
 }
 
-uint8_t bit_diff(uint16_t tmds_data)
+// Return the signed value of the difference between 1s and 0s.
+// Positive = more 1s, negative = more 0s.
+/*
+int bit_diff_s(uint16_t tmds_data)
 {
 	int ones_cnt = (int)ones_count(tmds_data);
-	int zeros_cnt = 9-ones_cnt;
-	uint8_t difference = (uint8_t)abs(ones_cnt-zeros_cnt);
+	int zeros_cnt = (int)zeros_count(tmds_data);
+	int difference = ones_cnt-zeros_cnt;
 	return difference;
 }
+*/
 
 uint8_t ones_count(uint16_t color_data)
 {
@@ -96,8 +145,19 @@ uint8_t ones_count(uint16_t color_data)
 	return ones_cnt;
 }
 
+uint8_t bit_diff(uint16_t tmds_data)
+{
+	int ones_cnt = (int)ones_count(tmds_data);
+	int zeros_cnt = 9-ones_cnt;
+	uint8_t difference = (uint8_t)abs(ones_cnt-zeros_cnt);
+	return difference;
+}
+
 //disparity is a 5-bit signed integer converted to a 5-bit unsigned integer
 //takes a color channel value and interleaves it into a TMDS word with disparity
+//If the signed value is 0, then assume the output is how much disparity to add for that color value.
+//Which means that disparity multiplied by 3 is the result of encoding a pixel.
+//If it isn't 0, then the added disparity is the difference between the old and new values.
 uint32_t tmds_calc_disparity(uint16_t color_data, int disparity)
 {
 	//for the LUT, there are 2^(8+5) -> 8192 entries; 32 for each color channel value
@@ -130,7 +190,7 @@ uint32_t tmds_calc_disparity(uint16_t color_data, int disparity)
 	}
 	else
 	{
-		if((disparity>0 && ones_cnt>4) || (disparity<0 && ones<4))
+		if((disparity>0 && ones_cnt>4) || (disparity<0 && ones_cnt<4))
 		{
 			if((tmds_word&0x100)==1)
 			{
@@ -175,15 +235,17 @@ uint32_t tmds_calc_disparity(uint16_t color_data, int disparity)
 //This may require a whole lookup table for color correction
 //Which means 32768 * 32-bit words = 131072 bytes per LUT
 //Or 3 * 32 * 1024 bytes for all channels, 98304 bytes total
+//Which the RP2040 doesn't have if a single buffer is used.
+/*
 void gba_lcd_correct(uint8_t r_in, uint8_t g_in, uint8_t b_in, uint8_t *r_out, uint8_t *g_out, uint8_t *b_out)
 {
 	double lcdGamma = 4.0, outGamma = 2.2;
 	double lb = pow(((double)b_in / 31.0), lcdGamma);
 	double lg = pow(((double)g_in / 31.0), lcdGamma);
 	double lr = pow(((double)r_in / 31.0), lcdGamma);
-	r_out = (uint8_t)pow((((50*lg)+(255*lr))/255), (1/outGamma))*((0xffff*255)/280);
-	g_out = (uint8_t)pow((((30*lb)+(230*lg)+(10*lr))/255), (1/outGamma))*((0xffff*255)/280);
-	b_out = (uint8_t)pow((((220*lb)+(10*lg)+(50*lr))/255), (1/outGamma))*((0xffff*255)/280);
+	*r_out = (uint8_t)pow((((50*lg)+(255*lr))/255), (1/outGamma))*((0xffff*255)/280);
+	*g_out = (uint8_t)pow((((30*lb)+(230*lg)+(10*lr))/255), (1/outGamma))*((0xffff*255)/280);
+	*b_out = (uint8_t)pow((((220*lb)+(10*lg)+(50*lr))/255), (1/outGamma))*((0xffff*255)/280);
 }
 
 void gbc_lcd_correct(uint8_t r_in, uint8_t g_in, uint8_t b_in, uint8_t *r_out, uint8_t *g_out, uint8_t *b_out)
@@ -194,21 +256,22 @@ void gbc_lcd_correct(uint8_t r_in, uint8_t g_in, uint8_t b_in, uint8_t *r_out, u
 	R = min(960, R)>>2;
 	G = min(960, G)>>2;
 	B = min(960, B)>>2;
-	r_out = (uint8_t)R;
-	g_out = (uint8_t)G;
-	b_out = (uint8_t)B;
+	*r_out = (uint8_t)R;
+	*g_out = (uint8_t)G;
+	*b_out = (uint8_t)B;
 }
+*/
 
 //This converts the 5bpc colors into 8bpc with no color correction
-void depth_convert(uint8_t r_in, uint8_t g_in, uint8_t b_in, uint8_t *r_out, uint8_t *g_out, uint8_t *b_out)
+uint8_t depth_convert(uint8_t c_in)
 {
-	r_out = (r_in<<3)|((r_in&0x1c)>>2);
-	g_out = (g_in<<3)|((g_in&0x1c)>>2);
-	b_out = (b_in<<3)|((b_in&0x1c)>>2);
+	uint8_t c_out = (c_in<<3)|((c_in&0x1c)>>2);
+	return c_out;
 }
 
-int main(int argc, const char * argv[])
+int main()
 {
+    /*
     uint8_t color_lut_gba[3][32][1024]; //this should probably be malloc
     uint8_t color_lut_gbc[3][32][1024];
     uint16_t lut_addr_r, lut_addr_g, lut_addr_b;
@@ -245,4 +308,21 @@ int main(int argc, const char * argv[])
     		tmds_lut[j+16][i] = tmds_calc_disparity(i, j);
     	}
     }
+	*/
+	//Try to find out which combinations of disparities and data lead to it zeroing out
+	//with 2 of the same TMDS words and one different word.
+    uint32_t tmds_word = 0;
+    int disp_0 = 0, disp_1 = 0;
+    uint16_t c_value = 0;
+    for(uint16_t i=0; i<32; i++)
+    {
+    	c_value = (uint16_t)depth_convert((uint8_t)i);
+    	tmds_word = tmds_calc_disparity(c_value, 0);
+    	disp_0 = (((int)((tmds_word&0x1f000000)>>24))-16)*2;
+    	tmds_word = tmds_calc_disparity(c_value, disp_0);
+    	disp_1 = ((int)((tmds_word&0x1f000000)>>24))-16;
+    	printf("Disparity for value %2x: %2d initial, %2d final\n", c_value, disp_0, disp_1);
+    }
+
+    return 0;
 }

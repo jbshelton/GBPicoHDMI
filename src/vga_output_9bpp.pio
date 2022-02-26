@@ -1,0 +1,68 @@
+// Outputs the VGA data and sync signals.
+// OSR: shift to right, autopull, threshold 32(?)
+// The pixel clock is ~8.39MHz since the GB is upscaled 3x to 720x480 (1/3rd of the normal pixel clock.)
+// Shifts out data MSB first.
+// GP13-GP22 are the 10 bits of video data, and GP23-GP24 are horizontal and vertical sync.
+// Ideally, there should be a good 16 clock cycles for each pixel, so the system clock should be 134.24MHz, or something like that.
+
+.program vga_out_9bpp
+
+pixel_start:
+	pull
+	mov x, osr // Left image border
+	pull
+	mov y, osr // Active image area
+	nop side 1
+left_border:
+	nop [14]
+	jmp x-- left_border
+pixel_loop:
+	pull
+	nop [10]
+	out pins, 12
+	out NULL, 4
+	jmp y-- pixel_loop
+	pull
+	mov x, osr // Right image border
+	pull 
+	mov y, osr //
+	nop side 0
+hsync_pulse_stall:
+	nop [14]
+	jmp y-- hsync_pulse_stall
+	// Trigger IRQ for hsync pulse
+	wait irq, line_end
+	jmp pixel_start
+
+// Here is the code for the VGA sync stuff.
+hsync_start:
+	pull
+	mov x, osr // Hsync pulse duration
+	pull
+	mov y, osr // Lines before vsync pulse
+	set pins, 1
+	// Trigger IRQ to start the line
+	wait irq, line_end // Sent by the pixel output loop
+	set pins, 0
+hsync_loop:
+	wait irq, pixel_clk
+	jmp x-- hsync_loop
+	set pins, 1
+	jmp y-- hsync_start
+	// Send the vsync pulse interrupt
+	jmp hsync_start
+//14 instructions
+
+vsync_start:
+	pull
+	mov x, osr // Sync pulse duration
+	mov y, x
+vsync_pulse:
+	// Trigger IRQ to start hsync again
+	wait irq, pulse_start
+vsync_loop:
+	wait irq, line_end
+	jmp x-- vsync_loop
+	set pins, 1
+	mov x, y
+	jmp vsync_pulse

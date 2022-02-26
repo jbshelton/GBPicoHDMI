@@ -1,18 +1,20 @@
 // TMDS output
 // OSR: shift to right, autopull, threshold 32(?)
 // TMDS with clock program has the highest priority PIO block, and controls the initial IRQ to sync the other PIOs.
-.program tmds_output_w_clk
-.side_set 2
+// Since this PIO block has the least amount of used instruction space, the vertical sync program can fit here as well.
 
+.program tmds_output
+
+// A fourth PIO block is used for the clock.
 .wrap_target
-	out pins, 2		side 0b10
-	out pins, 2		side 0b01 ; Have to shift out 2 bits because inverted and normal are interleaved
+	out pins, 2 ; Have to shift out 2 bits because inverted and normal are interleaved
 .wrap
 
-; This program runs on the other 2 PIOs.
-.program tmds_output_wo_clk
-
+.program tmds_clk
+.side_set 2
 .wrap_target
-	out pins, 2
-	out pins, 2
+	nop side 0b10
+	nop [8]
+	nop side 0b01
+	nop [8]
 .wrap

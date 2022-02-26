@@ -1,0 +1,70 @@
+// Captures the LCD data.
+// LCD data is from GP2 to GP9, multiplexed by 2 74AHC541 octal buffers; OE1 is GP0, and OE2 is GP1.
+// This is done so there's enough GPIO left on the regular RPi Pico board to do audio input.
+// Horizontal sync, vertical sync and pixel clock are GP10-GP12.
+// IIRC vsync is active negative on GBC/GBA and positive on DMG. (DMG may just be inverted with hsync too?)
+// Horizontal sync and pixel clock need to be low in order to shift in one pixel.
+// Shifts in LCD data from the right, to the left.
+// Buffer output enable is little-endian, but shifting is big-endian (lowest GPIO gets highest bit.)
+// 1 Pi clock cycle lasts about 4 nanoseconds at 252MHz, and the '541 has a max enable/disable time of 14 nanoseconds*, 6 clock cycles or more of delay is safe enough.
+// *at room temperature (25C / 77F)
+// 2 + 8 + 3 pins = 13 pins for LCD capture (vs. 18 traditionally)
+// + 2 audio + 8 HDMI = 23 out of 26 pins
+// Which means 2 more could be used to connect a SNES controller to the console, and maybe one more could generate the system clock.
+
+// So this is basically the BOM:
+// - 1x RPi Pico
+// - 1x Adafruit DVI/HDMI adapter board
+// - 1x Custom PCB
+// - 1x 50/40/32/34 pin FPC (or a combination of them, depending on the system used)
+// - 1x Adafruit FPC adapter board (will have pin headers for those on a prototype board or a board option?)
+// - 1x ribbon cable (to pair with connector)
+// - 2x 74AHC541 octal buffer
+// - 2x 74HC595 shift register
+// - 1x SNES controller connector
+// - 1x stereo audio jack
+// - 1x (trim?) potentiometer (for adjusting audio input volume)
+// - ?x resistors
+
+// PINCTRL_IN_BASE = 0
+.program lcd_capture
+
+public entry_point:
+	set pins, 0b00010 [delay] //some delay to let the pin states settle
+.wrap_target
+	wait 0 gpio 12
+	wait 0 gpio 10
+
+//These 6 instructions have about 30 clock cycles to finish during the low edge of the pixel clock
+	in pins, 32
+	set pins, 0b00011 [6] //same as above; OE is active low, so I set it high to disable it for a little bit
+	in NULL, 2
+	mov x, isr
+	set pins, 0b00001 [8] //again
+	in pins, 32
+
+	in NULL, 2
+	mov y, isr
+	in x, 8
+	in y, 7
+	mov x, isr
+	wait 1 gpio 12
+	wait 0 gpio 12
+
+//These 6 instructions have about 30 clock cycles to finish during the low edge of the pixel clock
+	in pins, 32
+	set pins, 0b00011 [6]
+	in NULL, 2
+	mov y, isr
+	set pins, 0b00010 [8]
+	in pins, 8
+
+	in y, 7
+	in NULL, 17
+	mov y, isr
+	in x, 15
+	in NULL, 1
+	in y, 15
+	push
+	wait 1, gpio 12
+.wrap

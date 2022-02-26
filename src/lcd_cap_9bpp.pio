@@ -1,0 +1,22 @@
+// Captures the LCD data, for prototype VGA testing.
+// LCD data is from GP0 to GP9, so only 10 bits per pixel. (RRR GGGG BBB)
+// This is done so the VGA output can also be 10 bits per pixel.
+// Horizontal sync, vertical sync and pixel clock are GP10-GP12.
+// Shifts in data MSB first.
+
+// PINCTRL_IN_BASE = 0
+.program lcd_cap_9bpp
+
+public entry_point:
+.wrap_target
+	wait 0 gpio 12
+	wait 0 gpio 10
+	in NULL, 6
+	in pins, 10
+	wait 1 gpio 12
+	wait 0 gpio 12
+	in NULL, 6
+	in pins, 10
+	push
+	wait 1 gpio 12
+.wrap
