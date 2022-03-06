@@ -5,12 +5,12 @@ First, I provide the information on the standards, and then about the device its
 
 ---
 
-### Color correction
+### Color Correction
 I got my info on color correction from [this site](https://near.sh/articles/video/color-emulation)\. It has information on how to translate RGB555 colors to RGB888 colors directly, how to emulate the GBA LCD colors, and how to emulate the GBC LCD colors\. I have integrated this information into my `tmds_calc.c` program, which generates the lookup tables necessary to allow fast color correction while running on the RP2040\. I can't guarantee whether or not it will actually work, but if it can, the final product will have optional color correction when uploading the firmware to the board\. \(At the moment, I don't think that there will be enough time to perform color correction\.\)
 
 ---
 
-### The difference between VGA and DVI
+### The Difference Between VGA and DVI
 DVI is essentially a digital version of VGA with support for higher resolutions because of how it is encoded to support higher pixel clocks, as well as some changes to how syncing works in order to work with that transmission method\. The difference specifically being that 8\-bit color values are encoded to 10 bits, and a disparity variable is used to keep track of the difference between the number of zeroes and ones transmitted so that the DC offset of the signal can be kept to a minimum\. In addition to that, there are control signals/values that are transmitted at the end of the visible data along with a data enable signal so the sink knows it's time to listen for the sync signals\. The sync signals also have tighter timing requirements; sync signal transitions need to occur on the same pixel clock\. More details can be found within `tmds_calc.c`\.
 
 Below is a small table of how the control signals are encoded\. The control signals are used on all 3 TMDS \(short for **T**ransition **M**inimized **D**ifferential **S**ignaling\) data channels; specifically on channel 0, they are used for horizontal and vertical sync, and on all 3 channels they are used to indicate whether a data period is either video data or a data island \(which I will cover later\.\) These values are taken straight from the DVI 1\.0 document, which formats the output data as big\-endian; I have converted it to little\-endian for easier understanding\.
@@ -25,7 +25,7 @@ Below is a small table of how the control signals are encoded\. The control sign
 
 ---
 
-### The difference between DVI and HDMI
+### The Difference Between DVI and HDMI
 The difference between DVI and HDMI is that HDMI adds the ability to send encoded data over the 3 data channels during the blanking periods, or data island periods\. This includes InfoFrames, which allow the signal source to transmit information about the signal to the sink, such as resolution, framerate, color depth, and audio information like number of channels and sample rate\. Each InfoFrame has a 3\-byte header, and a 31\-byte packet including a checksum byte \(which is calculated by adding all the bytes in the packet together and subtracting that from 256\.\) This means 30 bytes are valid data, so as an example, in order to transmit audio consistently, 6 samples \(24 bytes\) are transmitted during one InfoFrame\. The header is transmitted one bit at a time over channel 0, and the packet data is transmitted over channels 1 and 2\.
 
 The header consists of a packet type byte, a version byte \(for the version of HDMI standard being used,\) and a length byte\. The length byte indicates how many bytes of the packet \(starting from packet byte 1, where byte 0 is the checksum\) are valid data\.
@@ -42,7 +42,7 @@ These preambles are supplemented by guard bands, which appear before the beginni
 
 ---
 
-### Auxiliary data encoding
+### Auxiliary Data Encoding
 HDMI uses an encoding method called TERC4 \(short for **T**MDS **E**rror **R**eduction **C**oding **4**\-bit\) to transmit data during the blanking periods, which are also known as data island periods\. TERC4 involves encoding 4 bits into a 10\-bit string to transmit via TMDS\. I don't know the exact algorithm used to do the encoding, but I do have a lookup table of those values\.
 
 | 4\-bit value | 10\-bit encoded value |
@@ -75,7 +75,7 @@ However, because the sample clock is most likely already reconstructed from the 
 
 ---
 
-### Signal specs
+### Signal Specs
 The output resolution is 720x480p at a pixel clock of 29\.4MHz \(and a TMDS clock of 294MHz respectively\.\) The total area used by the frame is 912x539, and the vertical refresh rate \(framerate\) is \~59\.8086Hz\. It's not the Gameboy's vertical refresh of \~59\.73Hz, but it's only \~0\.1358% faster\. Additionally, the resolution and TMDS clock \(which is the RP2040 system clock\) allows an output clock of 4\.2MHz or 8\.4MHz to be perfectly synchronous with a Gameboy, Gameboy Advance or Gameboy Color\. Below is a table comparing the full specs of this signal to the standard 720x480p 60Hz\.
 
 General info:
@@ -120,7 +120,7 @@ And here's the version without any data island periods:
 
 ---
 
-### TL;DR of concepts provided \(most important\)
+### Summary of Concepts
 - DVI is based off of VGA, but is digital, supports higher resolutions, has more precise sync timing requirements, and transmits data 10 times faster than the pixel clock \(because it is a serial data stream\)
 - HDMI is based off of DVI, but requires a bit of extra data in order to work
 - Video data is encoded to 10 bit words using the TMDS algorithm which encodes data based on the current signal's DC offset \(or disparity\)
@@ -130,7 +130,29 @@ And here's the version without any data island periods:
 
 ---
 
-### Initial DVI test program
+### Hardware Components and Pin Mapping
+First, I will go over what hardware components I will be using in order to make this thing work\. Keep in mind, this is what I used just for the prototype:
+- Solderless breadboard\(s\)
+- Raspberry Pi Pico board
+- Adafruit DVI breakout board
+- TXS0108E 8\-bit level shifter breakout boards
+- Custom audio buffer board
+- 3\.5mm audio jack breakout board
+- A bunch of jumper/breadboard wires
+
+And now the pin mapping\. For the sake of simplicity, I won't include the pin numbers on the Pico board\.
+| GPIO \(range\) | Function |
+| ------------ | -------- |
+| 0 \- 1 | Level shifter output enables |
+| 2 \- 9 | Multiplexed LCD data input |
+| 10 \- 12 | Pixel clock, hsync and vsync inputs |
+| 13 | Optional system clock output |
+| 14 \- 21 | HDMI output |
+| 26 \- 27 | ADC audio inputs |
+
+---
+
+### Initial DVI Test Program
 Because I want to start out small, I want to create a test program that simply displays a solid color and outputs sync signals in DVI mode\. That is, without any preambles or guard bands for the data island periods\. To make it simple, here's how the program will work:
 - Have one constant value/color to display that is sent in pairs with opposite parity so the equivalent DC offset is zero
 - At the start of the frame, DMA that value for the horizontal resolution
@@ -182,8 +204,13 @@ Of course, since I need to use DMA, I need to learn how it works from a programm
 
 ---
 
-### How to implement all this stuff in programming
-In order to implement really *any* of the concepts listed here in programming, the Raspberry Pi Pico SDK is very useful and helpful\. To start, let's have a look at the DMA functions\. Here are the ones that stuck out to me as the most important \(not really in any particular order\):
+## Implementing Everything in Programming
+In order to implement really *any* of the concepts listed here in programming, the Raspberry Pi Pico SDK is very useful and helpful\. I've compiled a list of the hardware components I will be using, and the code/functions used to interface with them\.
+
+---
+
+#### Part 1: DMA
+To start, let's have a look at the DMA functions\. Here are the ones that stuck out to me as the most important \(not really in any particular order\):
 - `dma_channel_claim (uint channel)`
 - `dma_channel_set_read_addr (uint channel, const volatile void *read_addr, bool trigger)` to set a channel's read address\.
 - `dma_channel_set_write_addr (uint channel, volatile void *write_addr, bool trigger)` to set a channel's write address\.
@@ -203,7 +230,66 @@ Here's the channel config functions, which interact with the `dma_channel_config
 - `channel_config_set_irq_quiet (dma_channel_config *c, bool irq_quiet)` to set whether or not a completed transfer will trigger an IRQ\.
 - `channel_config_set_enable (dma_channel_config *c, bool enable)` to enable the DMA channel\.
 
-There's still PWM, interrupts, and PIO configuration left to research in terms of interfacing hardware in C code before I start writing the test program\.
+Here is a table of all the DREQ sources:
+| DREQ | DREQ Channel | DREQ | DREQ Channel | DREQ | DREQ Channel | DREQ | DREQ Channel |
+| ---- | ------------ | ---- | ------------ | ---- | ------------ | ---- | ------------ |
+| 0 | DREQ_PIO0_TX0 | 10 | DREQ_PIO1_TX2 | 20 | DREQ_UART0_TX | 30 | DREQ_PWM_WRAP6 |
+| 1 | DREQ_PIO0_TX1 | 11 | DREQ_PIO1_TX3 | 21 | DREQ_UART0_RX | 31 | DREQ_PWM_WRAP7 |
+| 2 | DREQ_PIO0_TX2 | 12 | DREQ_PIO1_RX0 | 22 | DREQ_UART1_TX | 32 | DREQ_I2C0_TX |
+| 3 | DREQ_PIO0_TX3 | 13 | DREQ_PIO1_RX1 | 23 | DREQ_UART1_RX | 33 | DREQ_I2C0_RX |
+| 4 | DREQ_PIO0_RX0 | 14 | DREQ_PIO1_RX2 | 24 | DREQ_PWM_WRAP0 | 34 | DREQ_I2C1_TX |
+| 5 | DREQ_PIO0_RX1 | 15 | DREQ_PIO1_RX3 | 25 | DREQ_PWM_WRAP1 | 35 | DREQ_I2C1_RX |
+| 6 | DREQ_PIO0_RX2 | 16 | DREQ_SPI0_TX | 26 | DREQ_PWM_WRAP2 | 36 | DREQ_ADC |
+| 7 | DREQ_PIO0_RX3 | 17 | DREQ_SPI0_RX | 27 | DREQ_PWM_WRAP3 | 37 | DREQ_XIP_STREAM |
+| 8 | DREQ_PIO1_TX0 | 18 | DREQ_SPI1_TX | 28 | DREQ_PWM_WRAP4 | 38 | DREQ_XIP_SSITX |
+| 9 | DREQ_PIO1_TX1 | 19 | DREQ_SPI1_RX | 29 | DREQ_PWM_WRAP5 | 39 | DREQ_XIP_SSIRX |
+
+The HDMI output will utilize TX FIFO DREQs in order to pace its transfers; DMA channels 0-2 and 3-5 get DREQ_PIO1_TX0-2, channel 8 gets DREQ_PIO0_RX0, and channel 11 gets DREQ_ADC\.
+
+To recap, here's the functions of every DMA channel:
+- Channels 0-2: main TMDS active video transfer
+- Channels 3-5: sync and aux data transfer
+- Channel 6-7: channel 0-5 reconfiguring
+- Channel 8: input LCD data transfer to framebuffer \(double buffer of 240x160 words total\)
+- Channels 9: channel 8 reconfiguring
+- Channel 10: ADC sample transferring \(double buffer of 192 samples each, 96 samples per channel\)
+- Channel 11: channel 10 reconfiguring \(buffers may be contiguous, but the CPU should be interrupted every time one buffer is filled, which equals one audio block's worth of samples\(?\)\)
+
+---
+
+#### Part 2: System Clock
+Since the Pico needs to run at 294MHz in order to output an HDMI signal, let's look at how to configure the system clock\. Here are the functions that I'm going to use:
+- `check_sys_clock_khz (uint32_t freq_khz, uint *vco_freq_out, uint *post_div1_out, uint *post_div2_out)` checks to see if a system clock frequency is valid, along with pointers to variables which will store the VCO frequency and dividers if it is valid\. These values can then be used to configure the system clock\.
+- `set_sys_clock_pll (uint32_t vco_freq, uint post_div1, uint post_div2)` to set the system's PLL directly\. I'll be using this in conjunction with `check_sys_clock_khz`\.
+
+---
+
+#### Part 3: GPIO and PIO Configuration
+The basic concept of GPIO is to either set the pin modes to input or output, and if it's an input optionally configure internal pull\-up or pull\-down resistors and then read from a register to get the pin states, and if it's an output, write to a register to set the pin outputs\. However, I there's a separate step in the process required for PIO connection to GPIO on the CPU side\- just set the pin function of the GPIOs that will be used by the PIO either to `GPIO_FUNC_PIO0` or `GPIO_FUNC_PIO1`\. Here are the relevant functions related to GPIO:
+- `gpio_set_function (uint gpio, enum gpio_function fn)` to set the function of a specific GPIO\.
+- `gpio_set_pulls (uint gpio, bool up, bool down)` to set the pulls of a specific GPIO\.
+- `gpio_set_input_enabled (uint gpio, bool enabled)` to enable a single GPIO as input\.
+- `gpio_set_slew_rate (uint gpio, enum gpio_slew_rate slew)` to set the slew rate of a GPIO\. This effectively makes the GPIO either low speed or high speed\. The two settings are `GPIO_SLEW_RATE_SLOW` and `GPIO_SLEW_RATE_FAST`\.
+- `gpio_set_drive_strength (uint gpio, enum gpio_drive_strength drive)` to set how much current at its maximum the GPIO will provide\. The strengths are 2mA, 4mA, 8mA and 12mA, specified by `GPIO_DRIVE_STRENGTH_nMA` where n is the strength\.
+- `gpio_set_dir_out_masked (uint32_t mask)` to set whichever GPIOs corresponding to set bits as outputs\.
+- `gpio_set_dir_in_masked (uint32_t mask)` to set whichever GPIOs corresponding to set bits as inputs\.
+
+PIOs are very versatile, because 'in', 'out', 'set' and 'side\-set' pins can mapped to different areas with different numbers of addressable pins associated with them\. TODO
+
+---
+
+#### Part 4: Interrupts and PWM
+TODO
+
+---
+
+#### Part : ADC
+TODO
+
+---
+
+### Compiling the code
+Because timing is critical, running all the code from RAM is extremely necessary\. In order to do this, when compiling the code, just use `cmake -DPICO_COPY_TO_RAM=1` to let the compiler know that the program needs to be copied to RAM\. TODO
 
 ---
 
