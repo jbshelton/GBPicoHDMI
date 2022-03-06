@@ -11,7 +11,7 @@ I got my info on color correction from [this site](https://near.sh/articles/vide
 ---
 
 ### The difference between VGA and DVI
-HDMI is built off of the DVI standard, which is essentially a digital version of VGA with support for higher resolutions because of how it is encoded to support higher pixel clocks, as well as some changes to how syncing works in order to work with that transmission method\. The difference specifically being that 8\-bit color values are encoded to 10 bits, and a disparity variable is used to keep track of the difference between the number of zeroes and ones transmitted so that the DC offset of the signal can be kept to a minimum\. In addition to that, there are control signals/values that are transmitted at the end of the visible data along with a data enable signal so the sink knows it's time to listen for the sync signals\. The sync signals also have tighter timing requirements; sync signal transitions need to occur on the same pixel clock\. More details can be found within `tmds_calc.c`\.
+DVI is essentially a digital version of VGA with support for higher resolutions because of how it is encoded to support higher pixel clocks, as well as some changes to how syncing works in order to work with that transmission method\. The difference specifically being that 8\-bit color values are encoded to 10 bits, and a disparity variable is used to keep track of the difference between the number of zeroes and ones transmitted so that the DC offset of the signal can be kept to a minimum\. In addition to that, there are control signals/values that are transmitted at the end of the visible data along with a data enable signal so the sink knows it's time to listen for the sync signals\. The sync signals also have tighter timing requirements; sync signal transitions need to occur on the same pixel clock\. More details can be found within `tmds_calc.c`\.
 
 Below is a small table of how the control signals are encoded\. The control signals are used on all 3 TMDS \(short for **T**ransition **M**inimized **D**ifferential **S**ignaling\) data channels; specifically on channel 0, they are used for horizontal and vertical sync, and on all 3 channels they are used to indicate whether a data period is either video data or a data island \(which I will cover later\.\) These values are taken straight from the DVI 1\.0 document, which formats the output data as big\-endian; I have converted it to little\-endian for easier understanding\.
 
@@ -76,7 +76,7 @@ However, because the sample clock is most likely already reconstructed from the 
 ---
 
 ### Signal specs
-The output resolution is 720x480p at a pixel clock of 29\.4MHz \(and a TMDS clock of 294MHz respectively\.\) The total area used by the frame is 912x539, and the vertical refresh rate \(framerate\) is \~59\.8086Hz\. It's not the Gameboy's vertical refresh of \~59\.73Hz, but it's only \~0\.1358% faster\. Additionally, the resolution and TMDS clock allows an output clock of 4\.2MHz or 8\.4MHz to be perfectly synchronous with a Gameboy, Gameboy Advance or Gameboy Color\. Below is a table comparing the full specs of this signal to the standard 720x480p 60Hz\.
+The output resolution is 720x480p at a pixel clock of 29\.4MHz \(and a TMDS clock of 294MHz respectively\.\) The total area used by the frame is 912x539, and the vertical refresh rate \(framerate\) is \~59\.8086Hz\. It's not the Gameboy's vertical refresh of \~59\.73Hz, but it's only \~0\.1358% faster\. Additionally, the resolution and TMDS clock \(which is the RP2040 system clock\) allows an output clock of 4\.2MHz or 8\.4MHz to be perfectly synchronous with a Gameboy, Gameboy Advance or Gameboy Color\. Below is a table comparing the full specs of this signal to the standard 720x480p 60Hz\.
 
 General info:
 | Standard or no | Format code | Hactive | Vactive | Htotal | Hblank | Vtotal | Vblank | H freq \(KHz\) | V freq \(Hz\) | Pixel freq \(MHz\) |
@@ -94,7 +94,7 @@ Specific sync info:
 
 If you're confused, here's what the terms mean:
 - Hfront/Vfront: Horizontal/vertical front porch \(pixels/lines after the active video data before the sync pulse\)
-- Hback/Vback: Horizontal/vertical back porch
+- Hback/Vback: Horizontal/vertical back porch \(pixels/lines after the sync pulse before the active video data starts again\)
 - Hpol/Vpol: Horizontal/vertical sync pulse polarity
 
 From the custom specifications, here are the \(rough\) data transmission timings for video outside of vertical blanking on channels 1 and 2:
@@ -121,7 +121,12 @@ And here's the version without any data island periods:
 ---
 
 ### TL;DR of concepts provided \(most important\)
-TODO
+- DVI is based off of VGA, but is digital, supports higher resolutions, has more precise sync timing requirements, and transmits data 10 times faster than the pixel clock \(because it is a serial data stream\)
+- HDMI is based off of DVI, but requires a bit of extra data in order to work
+- Video data is encoded to 10 bit words using the TMDS algorithm which encodes data based on the current signal's DC offset \(or disparity\)
+- HDMI adds preambles, guardbands and data islands to DVI in order to transmit other data besides video during the blanking intervals \(which is encoded with TERC4\)
+- The preambles and guardbands are fixed data words
+- Data is transmitted in packets, which have a 3\-byte header, a checksum, and 31 bytes of data, and 2 packets can be transmitted per hblank
 
 ---
 
@@ -177,10 +182,42 @@ Of course, since I need to use DMA, I need to learn how it works from a programm
 
 ---
 
-### How to implement DMA in programming
-TODO
+### How to implement all this stuff in programming
+In order to implement really *any* of the concepts listed here in programming, the Raspberry Pi Pico SDK is very useful and helpful\. To start, let's have a look at the DMA functions\. Here are the ones that stuck out to me as the most important \(not really in any particular order\):
+- `dma_channel_claim (uint channel)`
+- `dma_channel_set_read_addr (uint channel, const volatile void *read_addr, bool trigger)` to set a channel's read address\.
+- `dma_channel_set_write_addr (uint channel, volatile void *write_addr, bool trigger)` to set a channel's write address\.
+- `dma_channel_set_trans_count (uint channel, uint32_t trans_count, bool trigger)` to set a channel's number of transfers to perform before stopping\.
+- `dma_channel_set_config (uint channel, const dma_channel_config *config, bool trigger)` to set a channel's configuration from a `dma_channel_config`\.
+- `dma_channel_start (uint channel)` to start a single channel\.
+- `dma_start_channel_mask (uint32_t chan_mask)` to start multiple channels at once\.
+- `dma_channel_abort (uint channel)` to stop a channel\.
+
+Here's the channel config functions, which interact with the `dma_channel_config` data type:
+- `channel_config_set_read_increment (dma_channel_config *c, bool incr)` to set whether or not the read address is incremented\.
+- `channel_config_set_write_increment (dma_channel_config *c, bool incr)` to set whether or not the write address is incremented\.
+- `channel_config_set_dreq (dma_channel_config *c, uint dreq)` to set a DREQ source for a particular DMA channel\. Refer to the table below for sources\.
+- `channel_config_set_chain_to (dma_channel_config *c, uint chain_to)` to set a channel to chain to\. Doesn't appear to support chaining to multiple channels at once, but further research is needed\.
+- `channel_config_set_transfer_data_size (dma_channel_config *c, enum dma_channel_transfer_size size)` to set the transfer size\.
+- `channel_config_set_ring (dma_channel_config *c, bool write, uint size_bits)` to set the bottom number of bits that will change for the DMA address if enabled\.
+- `channel_config_set_irq_quiet (dma_channel_config *c, bool irq_quiet)` to set whether or not a completed transfer will trigger an IRQ\.
+- `channel_config_set_enable (dma_channel_config *c, bool enable)` to enable the DMA channel\.
+
+There's still PWM, interrupts, and PIO configuration left to research in terms of interfacing hardware in C code before I start writing the test program\.
+
+---
+
+### How audio is encoded
+HDMI can transmit audio formatted in the AES3 standard, which basically comprises raw PCM and some data describing the audio stream so that the sink can decode it and play it back properly\. My current focus is making sure sync works, so this section is TODO
 
 ---
 
 ### HDMI audio test program
 Note: Because the InfoFrame packets are wacky, a null byte \(or header checksum?\) has to be sent during the header, and a null byte has to be sent at the end of a packet to pad it to 32 bytes\. In the case of audio, since only 6 samples or 24 bytes are transmitted in a packet in order to consistently send an audio block in 16 lines, it has to be padded with 7 null bytes, and the length in the header has to be set to 24\. I want to create the first DVI test program first before I think more about this, so it is currently TODO
+
+---
+
+### Gameboy model select
+The first prototype/working device won't have any model detection and will have separate firmwares for different models, but the final version might have model detection and switching\. In order to make the device more versatile, it needs to be able to get video output from every Gameboy model while using the same firmware\. There is one more GPIO pin, GP28, that can be used to determine which model of Gameboy is connected \(or the intended model\) when the device powers on\. If the pin is low, then it is either a GBC or a GBA \(the framebuffer will be the same size for all models and framebuffer position will be determined in software,\) but sampling will be different,\) and if the pin is high, a DMG \(monochrome Gameboy\) is connected\. Without using 2 input buffers, the 6 other inputs can be used to monitor a set of buttons that can switch between user\-configured color palettes\.
+
+If the Gameboy in GBC/GBA mode is detected incorrectly, the pin can be brought low again in order to run the detection again\.
