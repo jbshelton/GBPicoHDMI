@@ -1,7 +1,12 @@
 /*
-	tmds_calc.c
+	
+	OLD, OUTDATED PROGRAM
+	ONLY KEPT FOR POTENTIAL FUTURE REFERENCE/ARCHIVING PURPOSES
+
+	tmds_util.c
 
 	This program generates the TMDS output data/lookup tables for the Raspberry Pi Pico/RP2040.
+	And various other utilities.
 	It also generates color correction lookup tables for "emulating" the GBC and GBA LCD colors.
 	They may go unused in the final device because of timing constraints.
 
@@ -62,6 +67,14 @@
 #include <math.h>
 #include <unistd.h>
 
+struct tmds_pixel_t
+{
+	uint8_t color_data;
+	uint16_t tmds_data;
+	int disparity;
+};
+
+// THIS IS OUTDATED! THE PIOS CAN PERFORM THIS ON THE FLY, SO THIS IS NOT NECESSARY!!!
 uint32_t tmds_interleave(uint16_t tmds_data, int disparity)
 {
 	uint8_t unsd = ((uint8_t)(disparity+16))&0x1f;
@@ -84,7 +97,8 @@ uint32_t tmds_interleave(uint16_t tmds_data, int disparity)
 	//Disparity is stored in the top byte.
 }
 
-//little endian
+// little endian
+// Input: 5-bit color value, right aligned.
 uint16_t tmds_xor(uint8_t color_data)
 {
 	uint16_t this_color = (uint16_t)color_data;
@@ -136,7 +150,7 @@ uint8_t ones_count(uint16_t color_data)
 {
 	uint16_t this_color = color_data;
 	uint8_t ones_cnt = 0;
-	for(int i=0; i<16; i++)
+	for(int i=0; i<9; i++)
 	{
 		if((this_color&0x01)==1) 
 			ones_cnt++;
@@ -158,27 +172,29 @@ uint8_t bit_diff(uint16_t tmds_data)
 //If the signed value is 0, then assume the output is how much disparity to add for that color value.
 //Which means that disparity multiplied by 3 is the result of encoding a pixel.
 //If it isn't 0, then the added disparity is the difference between the old and new values.
-uint32_t tmds_calc_disparity(uint16_t color_data, int disparity)
+//Current LUT has 2 words per entry: one for the 3 TMDS words it outputs for the same pixel, and one for the resulting disparity.
+void tmds_calc_disparity(struct tmds_pixel_t *tmds_pixel)
 {
 	//for the LUT, there are 2^(8+5) -> 8192 entries; 32 for each color channel value
 	//since disparity is a signed 5-bit integer from -16 to 15
-	int this_disparity = disparity;
-	uint16_t this_color = color_data;
-	uint8_t ones_cnt = ones_count(this_color);
+	int this_disparity = tmds_pixel->disparity;
+	uint8_t ones_cnt = ones_count(tmds_pixel->color_data);
 	uint16_t tmds_word = 0;
 	uint8_t difference = 0;
-	if(ones_cnt>4 || (this_color&0x01)==0)
+	// Is there an excess of ones or is bit 0 equal to 0? If yes, then XNOR
+	if(ones_cnt>4 || !((tmds_pixel->color_data)&0x01))
 	{
-		tmds_word = tmds_xnor(this_color);
+		tmds_word = tmds_xnor(tmds_pixel->color_data);
 	}
+	// Is there an excess of zeroes? If yes, then XOR
 	if(ones_cnt<4)
 	{
-		tmds_word = tmds_xor(this_color);
+		tmds_word = tmds_xor(tmds_pixel->color_data);
 	}
 	difference = bit_diff(tmds_word);
-	if(ones_cnt==4 || disparity==0)
+	if(ones_cnt==4 || !(tmds_pixel->disparity))
 	{
-		if((tmds_word&0x100)==1)
+		if(tmds_word&0x100)
 		{
 			this_disparity = this_disparity+(int)difference;
 		}
@@ -190,9 +206,9 @@ uint32_t tmds_calc_disparity(uint16_t color_data, int disparity)
 	}
 	else
 	{
-		if((disparity>0 && ones_cnt>4) || (disparity<0 && ones_cnt<4))
+		if(((tmds_pixel->disparity)>0 && ones_cnt>4) || ((tmds_pixel->disparity)<0 && ones_cnt<4))
 		{
-			if((tmds_word&0x100)==1)
+			if(tmds_word&0x100)
 			{
 				tmds_word = ((~tmds_word)&0x2ff)|(tmds_word&0x100);
 				this_disparity = (this_disparity-(int)difference)+2;
@@ -205,7 +221,7 @@ uint32_t tmds_calc_disparity(uint16_t color_data, int disparity)
 		}
 		else
 		{
-			if((tmds_word&0x100)==1)
+			if(tmds_word&0x100)
 			{
 				this_disparity = this_disparity+(int)difference;
 			}
@@ -215,8 +231,21 @@ uint32_t tmds_calc_disparity(uint16_t color_data, int disparity)
 			}
 		}
 	}
-	uint32_t out_word = tmds_interleave(tmds_word, this_disparity);
-	return out_word;
+	tmds_pixel->disparity = this_disparity;
+	tmds_pixel->tmds_data = tmds_word;
+}
+
+// The disparity should be pre-initialized, in a loop.
+// The LUT is 32*32*2 words long, or 8192 bytes.
+void tmds_pixel_repeat(uint32_t *lut_buf, struct tmds_pixel_t *tmds_pixel)
+{
+	tmds_calc_disparity(tmds_pixel);
+	lut_buf[((tmds_pixel->color_data)<<1)|(((tmds_pixel->disparity)+16)<<6)] = tmds_pixel->tmds_data;
+	tmds_calc_disparity(tmds_pixel);
+	lut_buf[((tmds_pixel->color_data)<<1)|(((tmds_pixel->disparity)+16)<<6)] |= (tmds_pixel->tmds_data)<<10;
+	tmds_calc_disparity(tmds_pixel);
+	lut_buf[((tmds_pixel->color_data)<<1)|(((tmds_pixel->disparity)+16)<<6)] |= (tmds_pixel->tmds_data)<<20;
+	lut_buf[(((tmds_pixel->color_data)<<1)|(((tmds_pixel->disparity)+16)<<6))+1] = (tmds_pixel->disparity)+16;
 }
 
 //Color correction algorithms to use for generating the LUT: https://near.sh/articles/video/color-emulation
@@ -262,7 +291,7 @@ void gbc_lcd_correct(uint8_t r_in, uint8_t g_in, uint8_t b_in, uint8_t *r_out, u
 }
 */
 
-//This converts the 5bpc colors into 8bpc with no color correction
+// This converts the GBC/GBA 5bpc colors into 8bpc with no color correction.
 uint8_t depth_convert(uint8_t c_in)
 {
 	uint8_t c_out = (c_in<<3)|((c_in&0x1c)>>2);

@@ -6,14 +6,14 @@ First, I provide the information on the standards, and then about the device its
 ---
 
 ### Color Correction
-I got my info on color correction from [this site](https://near.sh/articles/video/color-emulation)\. It has information on how to translate RGB555 colors to RGB888 colors directly, how to emulate the GBA LCD colors, and how to emulate the GBC LCD colors\. I have integrated this information into my `tmds_calc.c` program, which generates the lookup tables necessary to allow fast color correction while running on the RP2040\. I can't guarantee whether or not it will actually work, but if it can, the final product will have optional color correction when uploading the firmware to the board\. \(At the moment, I don't think that there will be enough time to perform color correction\.\)
+I got my info on color correction from [this site](https://near.sh/articles/video/color-emulation)\. It has information on how to translate RGB555 colors to RGB888 colors directly, how to emulate the GBA LCD colors, and how to emulate the GBC LCD colors\. I have integrated this information into my `tmds_util_colorcor.c` program, which is purely for archival purposes at the moment\. I can't guarantee whether or not it will actually work, but if it can, the final product will have optional color correction when uploading the firmware to the board\. \(At the moment, I don't think that there will be enough time to perform color correction\.\)
 
 ---
 
 ### The Difference Between VGA and DVI
-DVI is essentially a digital version of VGA with support for higher resolutions because of how it is encoded to support higher pixel clocks, as well as some changes to how syncing works in order to work with that transmission method\. The difference specifically being that 8\-bit color values are encoded to 10 bits, and a disparity variable is used to keep track of the difference between the number of zeroes and ones transmitted so that the DC offset of the signal can be kept to a minimum\. In addition to that, there are control signals/values that are transmitted at the end of the visible data along with a data enable signal so the sink knows it's time to listen for the sync signals\. The sync signals also have tighter timing requirements; sync signal transitions need to occur on the same pixel clock\. More details can be found within `tmds_calc.c`\.
+DVI is essentially a digital version of VGA with support for higher resolutions because of how it is encoded to support higher pixel clocks, as well as some changes to how syncing works in order to work with that transmission method\. The difference specifically being that 8\-bit color values are encoded to 10 bits, and a disparity variable is used to keep track of the difference between the number of zeroes and ones transmitted so that the DC offset of the signal can be kept to a minimum\. In addition to that, there are control signals/values that are transmitted at the end of the visible data along with a data enable signal so the sink knows it's time to listen for the sync signals\. The sync signals also have tighter timing requirements; sync signal transitions need to occur on the same pixel clock\. More details can be found within `tmds_util.c`\.
 
-Below is a small table of how the control signals are encoded\. The control signals are used on all 3 TMDS \(short for **T**ransition **M**inimized **D**ifferential **S**ignaling\) data channels; specifically on channel 0, they are used for horizontal and vertical sync, and on all 3 channels they are used to indicate whether a data period is either video data or a data island \(which I will cover later\.\) These values are taken straight from the DVI 1\.0 document, which formats the output data as big\-endian; I have converted it to little\-endian for easier understanding\.
+Below is a small table of how the control signals are encoded\. The control signals are used on all 3 TMDS \(short for **T**ransition **M**inimized **D**ifferential **S**ignaling\) data channels; specifically on channel 0, they are used for horizontal and vertical sync \(where bit 0 is hsync and bit 1 is vsync,\) and on all 3 channels they are used to indicate whether a data period is either video data or a data island \(which I will cover later\.\) These values are taken straight from the DVI 1\.0 document, which formats the output data as big\-endian; I have converted it to little\-endian for easier understanding\.
 
 
 | Control state | Output data |
@@ -30,7 +30,7 @@ The difference between DVI and HDMI is that HDMI adds the ability to send encode
 
 The header consists of a packet type byte, a version byte \(for the version of HDMI standard being used,\) and a length byte\. The length byte indicates how many bytes of the packet \(starting from packet byte 1, where byte 0 is the checksum\) are valid data\.
 
-Hold it\! Before I move on to how data is encoded, I need to specify that before the data island period starts, a few things need to happen\. There are actually control periods between the active video data and the data island periods which tell the sink what data period is coming next, which are padded by some extra "control data\." This just happens to be horizontal and vertical sync \(bits 0 and 1 respectively\) on channel 0, with the useful data on channels 1 and 2\. First, the source transmits the extra data \(being normal DVI sync data\) for at least 4 pixel clocks\. Second, the source transmits the control word across channels 1 and 2 for 8 pixel clocks\. If the next data period is the data island, channels 1 and 2 transmit `0b01`, and if the next period is active video data, channel 1 transmits `0b01` and channel 2 transmits `0b00`\. \(2\-bit values refer to the control state lookup table above\.\)
+Hold it\! Before I move on to how data is encoded, I need to specify that before the data island period starts, a few things need to happen\. There are actually control periods between the active video data and the data island periods which tell the sink what data period is coming next, which are padded by some extra "control data\." This just happens to be horizontal and vertical sync \(bits 0 and 1 respectively\) on channel 0, with the useful data on channels 1 and 2\. First, the source transmits the extra data \(being normal DVI sync data\) for at least 4 pixel clocks\. Second, the source transmits the control word across channels 1 and 2 for 8 pixel clocks\. If the next data period is the data island, channels 1 and 2 transmit `0b01`, and if the next period is active video data, channel 1 transmits `0b01` and channel 2 transmits `0b00`\. \(2\-bit values refer to the control state lookup table above\.\) \(If this is not the case when I test it, then it refers to the guardband states\.\)
 
 These preambles are supplemented by guard bands, which appear before the beginning of active video data, and at the beginning and end of the data island period, and are transmitted for 2 pixel clocks each\.
 
@@ -244,12 +244,12 @@ Here is a table of all the DREQ sources:
 | 8 | DREQ_PIO1_TX0 | 18 | DREQ_SPI1_TX | 28 | DREQ_PWM_WRAP4 | 38 | DREQ_XIP_SSITX |
 | 9 | DREQ_PIO1_TX1 | 19 | DREQ_SPI1_RX | 29 | DREQ_PWM_WRAP5 | 39 | DREQ_XIP_SSIRX |
 
-The HDMI output will utilize TX FIFO DREQs in order to pace its transfers; DMA channels 0-2 and 3-5 get DREQ_PIO1_TX0-2, channel 8 gets DREQ_PIO0_RX0, and channel 11 gets DREQ_ADC\.
+The HDMI output will utilize TX FIFO DREQs in order to pace its transfers; DMA channels 0\-2 and 3\-5 get DREQ_PIO1_TX0\-2, channel 8 gets DREQ_PIO0_RX0, and channel 11 gets DREQ_ADC\.
 
 To recap, here's the functions of every DMA channel:
-- Channels 0-2: main TMDS active video transfer
-- Channels 3-5: sync and aux data transfer
-- Channel 6-7: channel 0-5 reconfiguring
+- Channels 0\-2: main TMDS active video transfer
+- Channels 3\-5: sync and aux data transfer
+- Channel 6\-7: channel 0\-5 reconfiguring
 - Channel 8: input LCD data transfer to framebuffer \(double buffer of 240x160 words total\)
 - Channels 9: channel 8 reconfiguring
 - Channel 10: ADC sample transferring \(double buffer of 192 samples each, 96 samples per channel\)
@@ -257,10 +257,12 @@ To recap, here's the functions of every DMA channel:
 
 ---
 
-#### Part 2: System Clock
+#### Part 2: System Clock and Core Voltage
 Since the Pico needs to run at 294MHz in order to output an HDMI signal, let's look at how to configure the system clock\. Here are the functions that I'm going to use:
 - `check_sys_clock_khz (uint32_t freq_khz, uint *vco_freq_out, uint *post_div1_out, uint *post_div2_out)` checks to see if a system clock frequency is valid, along with pointers to variables which will store the VCO frequency and dividers if it is valid\. These values can then be used to configure the system clock\.
 - `set_sys_clock_pll (uint32_t vco_freq, uint post_div1, uint post_div2)` to set the system's PLL directly\. I'll be using this in conjunction with `check_sys_clock_khz`\.
+
+In addition to doing that, the core voltage needs to be changed in order to successfully overclock the Pico to 294MHz\. [This video](https://www.youtube.com/watch?v=G2BuoFNLoDM&t=194s) gets into that around 3 minutes and 10 seconds in, and it seems that the minimum voltage for the speed I want to run it at is 1\.15 volts\. This requires the addition of `#include "hardware/vreg.h"`, and `vreg_set_voltage(VREG_VOLTAGE_1_15)` to set the voltage to the desired amount\.
 
 ---
 
@@ -274,7 +276,7 @@ The basic concept of GPIO is to either set the pin modes to input or output, and
 - `gpio_set_dir_out_masked (uint32_t mask)` to set whichever GPIOs corresponding to set bits as outputs\.
 - `gpio_set_dir_in_masked (uint32_t mask)` to set whichever GPIOs corresponding to set bits as inputs\.
 
-PIOs are very versatile, because 'in', 'out', 'set' and 'side\-set' pins can mapped to different areas with different numbers of addressable pins associated with them\. TODO
+PIOs are very versatile, because 'in', 'out', 'set' and 'side\-set' pins can mapped to different areas with different numbers of addressable pins associated with them\. The PIO state machine address/wrap space can also be configured\- in PicoDVI, the address space is set to only 1 bit \(2 instructions\) so that single\-ended TMDS data can be translated into a differential output using the program counter as a LUT address for a side\-set that creates the output\!
 
 ---
 
