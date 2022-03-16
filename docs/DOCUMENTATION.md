@@ -172,7 +172,7 @@ For the record, the DMA will transfer data to the PIOs when the FIFOs are either
 
 In order to reduce DMA channel usage, there will be 2 DMAs for configuration: one that reads from a control data buffer and writes to the main channels, and one that the first DMA chains into that changes the read and write addresses of the first DMA\.
 
-Where literal channel 0 chains into "DMA 1" and that chains into "DMA 2" which normally chains into "DMA 1" again:
+Where literal channel 0 chains into "DMA 1" and that chains into "DMA 2" which normally chains into "DMA 1" again\. Each channel can be configured to wrap either its read or write address space\. DMA 1 should wrap in its write address space, and DMA 2 should wrap in its read address space \(since DMA 1 always reconfigures DMA 2, and DMA 2 configures the TMDS transmit channels as well as switch DMA 1's read position\.\)
 
 Channel 0: finishes displaying active data, chains into channel 3 and DMA 1 \(assuming DMA 1 is already reading from channels 0\-2 configuration buffer\)
 - DMA 1: configures DMA 2 to chain back into DMA 1
@@ -193,6 +193,8 @@ Channel 3: finishes sync, chains into channel 0 and DMA 1
 - DMA 2: configures channel 5
 - DMA 1: configures DMA 2 to read from DMA 1 configuration buffer and to not chain back into DMA 1
 - DMA 2: configures DMA 1 to read from channels 0\-2 configuration buffer
+
+Handling some of the DMA reconfigure action might need to be done by the TMDS encode core if there's enough time to do so\- PicoDVI outputs at a standard 800x525 resolution and only doubles its pixels instead of tripling them, so it shouldn't be unreasonable, considering that the CPU has at most 608 clock cycles to pack 16 tripled TMDS color channel values into 15 words in memory \(which is 38 clock cycles per tripled word\.\)
 
 However, I could handle it with the other CPU core and interrupts, since there's already more than enough time to encode a frame's worth of audio using C code and 2 DMA channels will be handling input capture without any aid from the CPU\. In that case, a DMA interrupt will occur every line if enabled by the CPU, and 4 PWM units will be configured to fire off an interrupt once every frame; one synchronized with the beginning of the last visible line \(or the start of the sync period, I don't know\), one synchronized with the beginning of the line when the vertical sync pulse is active, one synchronized with the beginning of the line when the vertical sync pulse becomes inactive, and one synchronized with the beginning of the line or sync period of the very last line of the frame\. One of those interrupts could also tell the CPU to switch DMA channels 3\-5 to a buffer containing an AVI InfoFrame \(to refresh the video signal information for the HDMI sink\) or an audio InfoFrame \(to refresh the audio information for the sink\.\) The one PWM unit that optionally triggers an interrupt every line is enabled by the CPU when it finishes encoding a single audio block, and disabled when that audio block has been fully transmitted\. When active, channel 3\-5 behavior changes so that instead of transmitting a single line of normal sync data \(including the vertical blanking period\) over and over, it switches to a sync and aux data buffer constructed by the CPU during audio encoding\.
 

@@ -63,7 +63,6 @@ const uint16_t terc4_table[] =
 	0b0000001011000011
 };
 
-
 struct tmds_pixel_t
 {
 	uint8_t color_data_5b;
@@ -92,6 +91,75 @@ struct sync_buffer_t
 	uint16_t *vblank_ex_ch1;
 	uint16_t *vblank_ex_ch2;
 };
+
+struct sync_buffer_32t
+{
+	uint32_t *hblank_ch0;
+	uint32_t *hblank_ch1;
+	uint32_t *hblank_ch2;
+
+	uint32_t *vblank_en_ch0;
+	uint32_t *vblank_en_ch1;
+	uint32_t *vblank_en_ch2;
+
+	uint32_t *vblank_syn_ch0;
+	uint32_t *vblank_syn_ch1;
+	uint32_t *vblank_syn_ch2;
+
+	uint32_t *vblank_ex_ch0;
+	uint32_t *vblank_ex_ch1;
+	uint32_t *vblank_ex_ch2;
+};
+
+// Function header prototypes
+void free_sync_buffers(struct sync_buffer_t *sync_buffer);
+void create_sync_buffers(struct sync_buffer_t *sync_buffer);
+void create_sync_buffers_nodat(struct sync_buffer_t *sync_buffer);
+// Look in function to see changes that need to be made
+void pack_sync_buffers(struct sync_buffer_t *sync_buffer, struct sync_buffer_32t *pack_buffer);
+
+uint16_t tmds_xor(uint8_t color_data);
+uint16_t tmds_xnor(uint8_t color_data);
+int ones_count(uint8_t color_data);
+void tmds_calc_disparity(struct tmds_pixel_t *tmds_pixel);
+void tmds_pixel_repeat(uint32_t *lut_buf, struct tmds_pixel_t *tmds_pixel);
+uint8_t depth_convert(uint8_t c_in);
+
+// Creates the TMDS lookup table, where each entry has 3 separate pixels and an output disparity value.
+// Addressed by disparity<<6|color_data<<1 for the TMDS data, and the entry after that is the disparity.
+int main()
+{
+    uint32_t *tmds_lut = (uint32_t *)malloc(0x400*sizeof(uint32_t));
+    struct tmds_pixel_t *tmds_pixel = (struct tmds_pixel_t *)malloc(sizeof(struct tmds_pixel_t));
+    uint8_t color = 0, color_8b = 0;
+    int dispy = 0;
+    for(color=0; color<32; color++)
+    {
+    	for(dispy=-8; dispy<8; dispy++)
+    	{
+    		color_8b = depth_convert(color);
+    		tmds_pixel->color_data_5b = color;
+    		tmds_pixel->color_data = color_8b;
+    		tmds_pixel->tmds_data = 0;
+    		tmds_pixel->disparity = dispy;
+    		tmds_pixel_repeat(tmds_lut, tmds_pixel);
+    	}
+    }
+
+    FILE *pico_tmds_lut = fopen("tmds_lut.bin", "w");
+    fwrite(tmds_lut, 1, 4096, pico_tmds_lut);
+    fclose(pico_tmds_lut);
+    free(tmds_pixel);
+    free(tmds_lut);
+
+    struct sync_buffer_t *sync_buffer = (struct sync_buffer_t *)malloc(sizeof(struct sync_buffer_t));
+    create_sync_buffers(sync_buffer);
+
+    // Have another function that interleaves all the 10 bit words from the uint16_t arrays into a uint32_t array
+    // that's perfectly bit-packed, so that 48 10-bit TMDS words fit into 15 32-bit words
+    
+    return 0;
+}
 
 // Frees the allocated buffers before the program exits to prevent bad stuff from happening.
 void free_sync_buffers(struct sync_buffer_t *sync_buffer)
@@ -320,6 +388,51 @@ void create_sync_buffers_nodat(struct sync_buffer_t *sync_buffer)
 
 }
 
+// Packs the data from the sync buffers. 16 10-bit TMDS words fit into 5 32-bit words.
+// There are 192 TMDS words per buffer channel, so they would fit it ((192/16)=12)*5 = 60 32-bit words.
+void pack_sync_buffers(struct sync_buffer_t *sync_buffer, struct sync_buffer_32t *pack_buffer)
+{
+	int ch0_s = 0;
+	int ch1_s = 0;
+	int ch2_s = 0;
+	int ch0_p = 0;
+	int ch1_p = 0;
+	int ch2_p = 0;
+	uint32_t temp_word = 0;
+	for(int k=0; k<12; k++)
+	{
+		// This can be done without copying and pasting- make a fuction that requires a pointer be passed to it
+		// (pointer to the channel buffer), only repeat needed is the function call
+		temp_word = ((uint32_t)(sync_buffer->hblank_ch0[ch0_s++]));
+		temp_word |= ((uint32_t)(sync_buffer->hblank_ch0[ch0_s++]))<<10;
+		temp_word |= ((uint32_t)(sync_buffer->hblank_ch0[ch0_s++]))<<20;
+		temp_word |= (((uint32_t)(sync_buffer->hblank_ch0[ch0_s]))&0x03)<<30;
+		pack_buffer->hblank_ch0[ch0_p++] = temp_word;
+		// Next word has bottom 2 bits cut off
+		temp_word = ((uint32_t)(sync_buffer->hblank_ch0[ch0_s++]))>>2;
+		temp_word |= ((uint32_t)(sync_buffer->hblank_ch0[ch0_s++]))<<8;
+		temp_word |= ((uint32_t)(sync_buffer->hblank_ch0[ch0_s++]))<<18;
+		temp_word |= (((uint32_t)(sync_buffer->hblank_ch0[ch0_s]))&0x0f)<<28;
+		pack_buffer->hblank_ch0[ch0_p++] = temp_word;
+		// Next word has bottom 4 bits cut off
+		temp_word = ((uint32_t)(sync_buffer->hblank_ch0[ch0_s++]))>>4;
+		temp_word |= ((uint32_t)(sync_buffer->hblank_ch0[ch0_s++]))<<6;
+		temp_word |= ((uint32_t)(sync_buffer->hblank_ch0[ch0_s++]))<<16;
+		temp_word |= (((uint32_t)(sync_buffer->hblank_ch0[ch0_s]))&0x3f)<<26;
+		pack_buffer->hblank_ch0[ch0_p++] = temp_word;
+		// Next word has bottom 6 bits cut off
+		temp_word = ((uint32_t)(sync_buffer->hblank_ch0[ch0_s++]))>>6;
+		temp_word |= ((uint32_t)(sync_buffer->hblank_ch0[ch0_s++]))<<4;
+		temp_word |= ((uint32_t)(sync_buffer->hblank_ch0[ch0_s++]))<<14;
+		temp_word |= (((uint32_t)(sync_buffer->hblank_ch0[ch0_s]))&0xff)<<24;
+		// Next word has bottom 8 bits cut off
+		temp_word = ((uint32_t)(sync_buffer->hblank_ch0[ch0_s++]))>>8;
+		temp_word |= ((uint32_t)(sync_buffer->hblank_ch0[ch0_s++]))<<2;
+		temp_word |= ((uint32_t)(sync_buffer->hblank_ch0[ch0_s++]))<<12;
+		temp_word |= (((uint32_t)(sync_buffer->hblank_ch0[ch0_s]))&0x3ff)<<22;
+	}
+}
+
 // little endian
 // Input: 8-bit color value.
 uint16_t tmds_xor(uint8_t color_data)
@@ -516,40 +629,4 @@ uint8_t depth_convert(uint8_t c_in)
 		c_out = c_out^0x01;
 	}
 	return c_out;
-}
-
-// Creates the TMDS lookup table, where each entry has 3 separate pixels and an output disparity value.
-// Addressed by disparity<<6|color_data<<1 for the TMDS data, and the entry after that is the disparity.
-int main()
-{
-    uint32_t *tmds_lut = (uint32_t *)malloc(0x400*sizeof(uint32_t));
-    struct tmds_pixel_t *tmds_pixel = (struct tmds_pixel_t *)malloc(sizeof(struct tmds_pixel_t));
-    uint8_t color = 0, color_8b = 0;
-    int dispy = 0;
-    for(color=0; color<32; color++)
-    {
-    	for(dispy=-8; dispy<8; dispy++)
-    	{
-    		color_8b = depth_convert(color);
-    		tmds_pixel->color_data_5b = color;
-    		tmds_pixel->color_data = color_8b;
-    		tmds_pixel->tmds_data = 0;
-    		tmds_pixel->disparity = dispy;
-    		tmds_pixel_repeat(tmds_lut, tmds_pixel);
-    	}
-    }
-
-    FILE *pico_tmds_lut = fopen("tmds_lut.bin", "w");
-    fwrite(tmds_lut, 1, 4096, pico_tmds_lut);
-    fclose(pico_tmds_lut);
-    free(tmds_pixel);
-    free(tmds_lut);
-
-    struct sync_buffer_t *sync_buffer = (struct sync_buffer_t *)malloc(sizeof(struct sync_buffer_t));
-    create_sync_buffers(sync_buffer);
-
-    // Have another function that interleaves all the 10 bit words from the uint16_t arrays into a uint32_t array
-    // that's perfectly bit-packed, so that 48 10-bit TMDS words fit into 15 32-bit words
-    
-    return 0;
 }
