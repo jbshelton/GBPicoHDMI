@@ -5,8 +5,16 @@
 	And various other utilities. (Coming soon)
 
 	TO DO:
-	-Add TMDS control word packing (right now it only puts 1 10-bit TMDS word inside a uint16_t)
+	-Add HDMI InfoFrame generation
 	-Add TMDS audio LUT generation (if necessary)
+
+	The HDMI InfoFrame buffers will still have the standard sync data tacked onto them,
+	but will just transmit the relevant information during the hsync pulse so channel 0
+	is ORed with whatever current bit of the header is shifted left 2 bits, and channels 1
+	and 2 will carry the little-endian TERC4 encoded data.
+	So before the unpacked buffer is freed after it is copied to the packed buffer, inject
+	the data into it and pack it into a different buffer. (Though encoding the sync and header
+	bits in TERC4 will have to be done manually.)
 */
 
 #include <stdio.h>
@@ -16,18 +24,7 @@
 #include <stdint.h>
 #include <math.h>
 #include <unistd.h>
-
-#define H_ACTIVE 720
-#define H_FRONT 32
-#define H_PULSE 64
-#define H_BACK 96
-#define H_TOTAL 912
-
-#define V_ACTIVE 480
-#define V_FRONT 13
-#define V_PULSE 8
-#define V_BACK 38
-#define V_TOTAL 539
+#include "tmds_util.h"
 
 const uint16_t sync_ctl_states[] = 
 {
@@ -63,67 +60,13 @@ const uint16_t terc4_table[] =
 	0b0000001011000011
 };
 
-struct tmds_pixel_t
+// OR these with the InfoFrame header bits.
+// 0 = during vsync, 1 = during active video (in the hblank interval, during the hsync pulse)
+const uint8_t sync_masks[] = 
 {
-	uint8_t color_data_5b;
-	uint8_t color_data;
-	uint16_t tmds_data;
-	int disparity;
+	0b00001000,
+	0b00001010
 };
-
-struct sync_buffer_t
-{
-	// Normal hblank
-	uint16_t *hblank_ch0;
-	uint16_t *hblank_ch1;
-	uint16_t *hblank_ch2;
-	// Entering and most of vblank: no video preamble or guard bands included, falling edge of vsync
-	uint16_t *vblank_en_ch0;
-	uint16_t *vblank_en_ch1;
-	uint16_t *vblank_en_ch2;
-	// Vsync: no video preamble or guard bands, with the addition of vsync pulse
-	uint16_t *vblank_syn_ch0;
-	uint16_t *vblank_syn_ch1;
-	uint16_t *vblank_syn_ch2;
-	// Exiting vblank: the last hblank of the frame is just a normal hblank, except with the addition of rising edge of vsync
-	// (or first hblank before active video data)
-	uint16_t *vblank_ex_ch0;
-	uint16_t *vblank_ex_ch1;
-	uint16_t *vblank_ex_ch2;
-};
-
-struct sync_buffer_32t
-{
-	uint32_t *hblank_ch0;
-	uint32_t *hblank_ch1;
-	uint32_t *hblank_ch2;
-
-	uint32_t *vblank_en_ch0;
-	uint32_t *vblank_en_ch1;
-	uint32_t *vblank_en_ch2;
-
-	uint32_t *vblank_syn_ch0;
-	uint32_t *vblank_syn_ch1;
-	uint32_t *vblank_syn_ch2;
-
-	uint32_t *vblank_ex_ch0;
-	uint32_t *vblank_ex_ch1;
-	uint32_t *vblank_ex_ch2;
-};
-
-// Function header prototypes
-void free_sync_buffers(struct sync_buffer_t *sync_buffer);
-void create_sync_buffers(struct sync_buffer_t *sync_buffer);
-void create_sync_buffers_nodat(struct sync_buffer_t *sync_buffer);
-// Look in function to see changes that need to be made
-void pack_sync_buffers(struct sync_buffer_t *sync_buffer, struct sync_buffer_32t *pack_buffer);
-
-uint16_t tmds_xor(uint8_t color_data);
-uint16_t tmds_xnor(uint8_t color_data);
-int ones_count(uint8_t color_data);
-void tmds_calc_disparity(struct tmds_pixel_t *tmds_pixel);
-void tmds_pixel_repeat(uint32_t *lut_buf, struct tmds_pixel_t *tmds_pixel);
-uint8_t depth_convert(uint8_t c_in);
 
 // Creates the TMDS lookup table, where each entry has 3 separate pixels and an output disparity value.
 // Addressed by disparity<<6|color_data<<1 for the TMDS data, and the entry after that is the disparity.
@@ -152,8 +95,15 @@ int main()
     free(tmds_pixel);
     free(tmds_lut);
 
-    struct sync_buffer_t *sync_buffer = (struct sync_buffer_t *)malloc(sizeof(struct sync_buffer_t));
-    create_sync_buffers(sync_buffer);
+    struct sync_buffer_t *sync_buffer = create_sync_buffers();
+
+    struct sync_buffer_32t *pack_buffer = pack_sync_buffers(sync_buffer);
+    free_sync_buffers(sync_buffer);
+
+    struct sync_buffer_t *sync_buffer_nodat = create_sync_buffers();
+
+    struct sync_buffer_32t *pack_buffer_nodat = pack_sync_buffers(sync_buffer_nodat);
+    free_sync_buffers(sync_buffer_nodat);
 
     // Have another function that interleaves all the 10 bit words from the uint16_t arrays into a uint32_t array
     // that's perfectly bit-packed, so that 48 10-bit TMDS words fit into 15 32-bit words
@@ -181,6 +131,34 @@ void free_sync_buffers(struct sync_buffer_t *sync_buffer)
 	free(sync_buffer->vblank_ex_ch2);
 }
 
+void free_sync_buffers(struct sync_buffer_32t *sync_buffer)
+{
+	free(sync_buffer->hblank_ch0);
+	free(sync_buffer->hblank_ch1);
+	free(sync_buffer->hblank_ch2);
+
+	free(sync_buffer->vblank_en_ch0);
+	free(sync_buffer->vblank_en_ch1);
+	free(sync_buffer->vblank_en_ch2);
+
+	free(sync_buffer->vblank_syn_ch0);
+	free(sync_buffer->vblank_syn_ch1);
+	free(sync_buffer->vblank_syn_ch2);
+
+	free(sync_buffer->vblank_ex_ch0);
+	free(sync_buffer->vblank_ex_ch1);
+	free(sync_buffer->vblank_ex_ch2);
+}
+
+void allocate_sync_buffer(uint16_t *buffer)
+{
+	buffer = (uint16_t *)malloc((H_TOTAL-H_ACTIVE)*sizeof(uint16_t));
+}
+
+void allocate_sync_buffer(uint32_t *buffer)
+{
+	buffer = (uint32_t *)malloc(((H_TOTAL-H_ACTIVE)*10)/32);
+}
 // Video format (hsync before active video):
 // Line 494: enter vsync buffer
 // Lines 495-501: during vsync buffer
@@ -198,23 +176,25 @@ void free_sync_buffers(struct sync_buffer_t *sync_buffer)
 // Vsync buffer does not include a video data period preamble or guard band
 // They have null data during the data island periods.
 // Since there will be only one output resolution, this uses global defines.
-void create_sync_buffers(struct sync_buffer_t *sync_buffer)
+struct sync_buffer_t *create_sync_buffers()
 {
-	sync_buffer->hblank_ch0 = (uint16_t *)malloc((H_TOTAL-H_ACTIVE)*sizeof(uint16_t));
-	sync_buffer->hblank_ch1 = (uint16_t *)malloc((H_TOTAL-H_ACTIVE)*sizeof(uint16_t));
-	sync_buffer->hblank_ch2 = (uint16_t *)malloc((H_TOTAL-H_ACTIVE)*sizeof(uint16_t));
+	struct sync_buffer_t *sync_buffer = (struct sync_buffer_t *)malloc(sizeof(struct sync_buffer_t));
 
-	sync_buffer->vblank_en_ch0 = (uint16_t *)malloc((H_TOTAL-H_ACTIVE)*sizeof(uint16_t));
-	sync_buffer->vblank_en_ch1 = (uint16_t *)malloc((H_TOTAL-H_ACTIVE)*sizeof(uint16_t));
-	sync_buffer->vblank_en_ch2 = (uint16_t *)malloc((H_TOTAL-H_ACTIVE)*sizeof(uint16_t));
+	allocate_sync_buffer(sync_buffer->hblank_ch0);
+	allocate_sync_buffer(sync_buffer->hblank_ch1);
+	allocate_sync_buffer(sync_buffer->hblank_ch2);
 
-	sync_buffer->vblank_syn_ch0 = (uint16_t *)malloc((H_TOTAL-H_ACTIVE)*sizeof(uint16_t));
-	sync_buffer->vblank_syn_ch1 = (uint16_t *)malloc((H_TOTAL-H_ACTIVE)*sizeof(uint16_t));
-	sync_buffer->vblank_syn_ch2 = (uint16_t *)malloc((H_TOTAL-H_ACTIVE)*sizeof(uint16_t));
+	allocate_sync_buffer(sync_buffer->vblank_en_ch0);
+	allocate_sync_buffer(sync_buffer->vblank_en_ch1);
+	allocate_sync_buffer(sync_buffer->vblank_en_ch2);
 
-	sync_buffer->vblank_ex_ch0 = (uint16_t *)malloc((H_TOTAL-H_ACTIVE)*sizeof(uint16_t));
-	sync_buffer->vblank_ex_ch1 = (uint16_t *)malloc((H_TOTAL-H_ACTIVE)*sizeof(uint16_t));
-	sync_buffer->vblank_ex_ch2 = (uint16_t *)malloc((H_TOTAL-H_ACTIVE)*sizeof(uint16_t));
+	allocate_sync_buffer(sync_buffer->vblank_syn_ch0);
+	allocate_sync_buffer(sync_buffer->vblank_syn_ch1);
+	allocate_sync_buffer(sync_buffer->vblank_syn_ch2);
+
+	allocate_sync_buffer(sync_buffer->vblank_ex_ch0);
+	allocate_sync_buffer(sync_buffer->vblank_ex_ch1);
+	allocate_sync_buffer(sync_buffer->vblank_ex_ch2);
 	// Format, starting in hblank:
 	// Normal sync data for at least 4 pixel clocks
 	// Preamble for 8 pixel clocks (TMDS channel 1, channel 2): (data island here)
@@ -379,58 +359,204 @@ void create_sync_buffers(struct sync_buffer_t *sync_buffer)
 		sync_buffer->vblank_ex_ch1[j] = guardband_states[1];
 		sync_buffer->vblank_ex_ch2[j++] = guardband_states[0];
 	}
+
+	return sync_buffer;
 }
 
 // Creates sync buffers without the data island period.
 // Basically, just 190 pixel clocks' worth of normal sync data before the video guardband.
-void create_sync_buffers_nodat(struct sync_buffer_t *sync_buffer)
+// No data island preamble, no data island guardbands, just the video preamble and guard band.
+struct sync_buffer_t *create_sync_buffers_nodat()
 {
+	struct sync_buffer_t *sync_buffer = (struct sync_buffer_t *)malloc(sizeof(struct sync_buffer_t));
 
+	allocate_sync_buffer(sync_buffer->hblank_ch0);
+	allocate_sync_buffer(sync_buffer->hblank_ch1);
+	allocate_sync_buffer(sync_buffer->hblank_ch2);
+
+	allocate_sync_buffer(sync_buffer->vblank_en_ch0);
+	allocate_sync_buffer(sync_buffer->vblank_en_ch1);
+	allocate_sync_buffer(sync_buffer->vblank_en_ch2);
+
+	allocate_sync_buffer(sync_buffer->vblank_syn_ch0);
+	allocate_sync_buffer(sync_buffer->vblank_syn_ch1);
+	allocate_sync_buffer(sync_buffer->vblank_syn_ch2);
+
+	allocate_sync_buffer(sync_buffer->vblank_ex_ch0);
+	allocate_sync_buffer(sync_buffer->vblank_ex_ch1);
+	allocate_sync_buffer(sync_buffer->vblank_ex_ch2);
+	// Format, starting in hblank:
+	// Normal sync data for at least 4 pixel clocks
+	// Preamble for 8 pixel clocks (TMDS channel 1, channel 2): (data island here)
+	// Data island: 0b01, 0b01; Video period: 0b01, 0b00
+	// Guard band for 2 pixel clocks (channel 0, 1, 2): (data island here)
+	// Video: 0b1011001100, 0b0100110011, 0b1011001100; Data: n/a, 0b0100110011, 0b0100110011
+	// Data island period: 64 clocks total, 32 per InfoFrame/packet
+	// Guard band for 2 pixel clocks (data island exit)
+	// Normal sync data for at least 4 pixel clocks
+	// Preamble for 8 pixel clocks (video period here)
+	// Guard band for 2 pixel clocks (video period here)
+	// Active video data (not included in sync buffers)
+	int video_pad = (H_TOTAL - H_ACTIVE) - 10; // Subtract the 10 pixels used for video preamble and guardband
+	int sync_pad = ((H_TOTAL - H_ACTIVE) - H_BACK) - H_PULSE;
+	int j = 0;
+	for(int i=0; i<sync_pad; i++)
+	{
+		sync_buffer->hblank_ch0[j] = sync_ctl_states[3];
+		sync_buffer->hblank_ch1[j] = sync_ctl_states[0];
+		sync_buffer->hblank_ch2[j] = sync_ctl_states[0];
+
+		sync_buffer->vblank_en_ch0[j] = sync_ctl_states[3];
+		sync_buffer->vblank_en_ch1[j] = sync_ctl_states[0];
+		sync_buffer->vblank_en_ch2[j] = sync_ctl_states[0];
+
+		sync_buffer->vblank_syn_ch0[j] = sync_ctl_states[1];
+		sync_buffer->vblank_syn_ch1[j] = sync_ctl_states[0];
+		sync_buffer->vblank_syn_ch2[j] = sync_ctl_states[0];
+
+		sync_buffer->vblank_ex_ch0[j] = sync_ctl_states[1];
+		sync_buffer->vblank_ex_ch1[j] = sync_ctl_states[0];
+		sync_buffer->vblank_ex_ch2[j++] = sync_ctl_states[0];
+	}
+	for(int i=0; i<H_PULSE; i++)
+	{
+		sync_buffer->hblank_ch0[j] = sync_ctl_states[2]; 
+		sync_buffer->hblank_ch1[j] = sync_ctl_states[0];
+		sync_buffer->hblank_ch2[j] = sync_ctl_states[0];
+
+		sync_buffer->vblank_en_ch0[j] = sync_ctl_states[0];
+		sync_buffer->vblank_en_ch1[j] = sync_ctl_states[0];
+		sync_buffer->vblank_en_ch2[j] = sync_ctl_states[0];
+
+		sync_buffer->vblank_syn_ch0[j] = sync_ctl_states[0]; 
+		sync_buffer->vblank_syn_ch1[j] = sync_ctl_states[0];
+		sync_buffer->vblank_syn_ch2[j] = sync_ctl_states[0];
+
+		sync_buffer->vblank_ex_ch0[j] = sync_ctl_states[2];
+		sync_buffer->vblank_ex_ch1[j] = sync_ctl_states[0];
+		sync_buffer->vblank_ex_ch2[j++] = sync_ctl_states[0];
+	}
+	// Only these last two remain the same
+	for(int i=0; i<8; i++)
+	{
+		sync_buffer->hblank_ch0[j] = sync_ctl_states[3];
+		sync_buffer->hblank_ch1[j] = sync_ctl_states[1];
+		sync_buffer->hblank_ch2[j] = sync_ctl_states[0];
+
+		sync_buffer->vblank_en_ch0[j] = sync_ctl_states[1];
+		sync_buffer->vblank_en_ch1[j] = sync_ctl_states[1];
+		sync_buffer->vblank_en_ch2[j] = sync_ctl_states[0];
+
+		sync_buffer->vblank_syn_ch0[j] = sync_ctl_states[1];
+		sync_buffer->vblank_syn_ch1[j] = sync_ctl_states[1];
+		sync_buffer->vblank_syn_ch2[j] = sync_ctl_states[0];
+
+		sync_buffer->vblank_ex_ch0[j] = sync_ctl_states[3];
+		sync_buffer->vblank_ex_ch1[j] = sync_ctl_states[1];
+		sync_buffer->vblank_ex_ch2[j++] = sync_ctl_states[0];
+	}
+	for(int i=0; i<2; i++)
+	{
+		sync_buffer->hblank_ch0[j] = guardband_states[0];
+		sync_buffer->hblank_ch1[j] = guardband_states[1]; 
+		sync_buffer->hblank_ch2[j] = guardband_states[0];
+
+		sync_buffer->vblank_en_ch0[j] = guardband_states[0];
+		sync_buffer->vblank_en_ch1[j] = guardband_states[1];
+		sync_buffer->vblank_en_ch2[j] = guardband_states[0];
+
+		sync_buffer->vblank_syn_ch0[j] = guardband_states[0];
+		sync_buffer->vblank_syn_ch1[j] = guardband_states[1];
+		sync_buffer->vblank_syn_ch2[j] = guardband_states[0];
+
+		sync_buffer->vblank_ex_ch0[j] = guardband_states[0];
+		sync_buffer->vblank_ex_ch1[j] = guardband_states[1];
+		sync_buffer->vblank_ex_ch2[j++] = guardband_states[0];
+	}
+
+	return sync_buffer;
+}
+
+// Packs a single channel into a buffer. Used to reduce copy and pasting.
+// Takes pointers to a uint16_t input buffer and uint32_t output buffer.
+void pack_buffer_single(uint16_t *in_buffer, uint32_t *out_buffer)
+{
+	int in_pos = 0, out_pos = 0;
+	uint32_t temp_word = 0;
+	for(int i=0; i<12; i++)
+	{
+		temp_word = ((uint32_t)(in_buffer[in_pos++]));
+		temp_word |= ((uint32_t)(in_buffer[in_pos++]))<<10;
+		temp_word |= ((uint32_t)(in_buffer[in_pos++]))<<20;
+		temp_word |= (((uint32_t)(in_buffer[in_pos]))&0x03)<<30;
+		out_buffer[out_pos++] = temp_word;
+		// Next word has bottom 2 bits cut off
+		temp_word = ((uint32_t)(in_buffer[in_pos++]))>>2;
+		temp_word |= ((uint32_t)(in_buffer[in_pos++]))<<8;
+		temp_word |= ((uint32_t)(in_buffer[in_pos++]))<<18;
+		temp_word |= (((uint32_t)(in_buffer[in_pos]))&0x0f)<<28;
+		out_buffer[out_pos++] = temp_word;
+		// Next word has bottom 4 bits cut off
+		temp_word = ((uint32_t)(in_buffer[in_pos++]))>>4;
+		temp_word |= ((uint32_t)(in_buffer[in_pos++]))<<6;
+		temp_word |= ((uint32_t)(in_buffer[in_pos++]))<<16;
+		temp_word |= (((uint32_t)(in_buffer[in_pos]))&0x3f)<<26;
+		out_buffer[out_pos++] = temp_word;
+		// Next word has bottom 6 bits cut off
+		temp_word = ((uint32_t)(in_buffer[in_pos++]))>>6;
+		temp_word |= ((uint32_t)(in_buffer[in_pos++]))<<4;
+		temp_word |= ((uint32_t)(in_buffer[in_pos++]))<<14;
+		temp_word |= (((uint32_t)(in_buffer[in_pos]))&0xff)<<24;
+		out_buffer[out_pos++] = temp_word;
+		// Next word has bottom 8 bits cut off- this allows the 30 other bits to be filled in
+		temp_word = ((uint32_t)(in_buffer[in_pos++]))>>8;
+		temp_word |= ((uint32_t)(in_buffer[in_pos++]))<<2;
+		temp_word |= ((uint32_t)(in_buffer[in_pos++]))<<12;
+		temp_word |= (((uint32_t)(in_buffer[in_pos]))&0x3ff)<<22;
+		out_buffer[out_pos++] = temp_word;
+	}
 }
 
 // Packs the data from the sync buffers. 16 10-bit TMDS words fit into 5 32-bit words.
 // There are 192 TMDS words per buffer channel, so they would fit it ((192/16)=12)*5 = 60 32-bit words.
-void pack_sync_buffers(struct sync_buffer_t *sync_buffer, struct sync_buffer_32t *pack_buffer)
+// All variations take up a total of 2880 bytes in RAM.
+struct sync_buffer_32t *pack_sync_buffers(struct sync_buffer_t *sync_buffer)
 {
-	int ch0_s = 0;
-	int ch1_s = 0;
-	int ch2_s = 0;
-	int ch0_p = 0;
-	int ch1_p = 0;
-	int ch2_p = 0;
-	uint32_t temp_word = 0;
-	for(int k=0; k<12; k++)
-	{
-		// This can be done without copying and pasting- make a fuction that requires a pointer be passed to it
-		// (pointer to the channel buffer), only repeat needed is the function call
-		temp_word = ((uint32_t)(sync_buffer->hblank_ch0[ch0_s++]));
-		temp_word |= ((uint32_t)(sync_buffer->hblank_ch0[ch0_s++]))<<10;
-		temp_word |= ((uint32_t)(sync_buffer->hblank_ch0[ch0_s++]))<<20;
-		temp_word |= (((uint32_t)(sync_buffer->hblank_ch0[ch0_s]))&0x03)<<30;
-		pack_buffer->hblank_ch0[ch0_p++] = temp_word;
-		// Next word has bottom 2 bits cut off
-		temp_word = ((uint32_t)(sync_buffer->hblank_ch0[ch0_s++]))>>2;
-		temp_word |= ((uint32_t)(sync_buffer->hblank_ch0[ch0_s++]))<<8;
-		temp_word |= ((uint32_t)(sync_buffer->hblank_ch0[ch0_s++]))<<18;
-		temp_word |= (((uint32_t)(sync_buffer->hblank_ch0[ch0_s]))&0x0f)<<28;
-		pack_buffer->hblank_ch0[ch0_p++] = temp_word;
-		// Next word has bottom 4 bits cut off
-		temp_word = ((uint32_t)(sync_buffer->hblank_ch0[ch0_s++]))>>4;
-		temp_word |= ((uint32_t)(sync_buffer->hblank_ch0[ch0_s++]))<<6;
-		temp_word |= ((uint32_t)(sync_buffer->hblank_ch0[ch0_s++]))<<16;
-		temp_word |= (((uint32_t)(sync_buffer->hblank_ch0[ch0_s]))&0x3f)<<26;
-		pack_buffer->hblank_ch0[ch0_p++] = temp_word;
-		// Next word has bottom 6 bits cut off
-		temp_word = ((uint32_t)(sync_buffer->hblank_ch0[ch0_s++]))>>6;
-		temp_word |= ((uint32_t)(sync_buffer->hblank_ch0[ch0_s++]))<<4;
-		temp_word |= ((uint32_t)(sync_buffer->hblank_ch0[ch0_s++]))<<14;
-		temp_word |= (((uint32_t)(sync_buffer->hblank_ch0[ch0_s]))&0xff)<<24;
-		// Next word has bottom 8 bits cut off
-		temp_word = ((uint32_t)(sync_buffer->hblank_ch0[ch0_s++]))>>8;
-		temp_word |= ((uint32_t)(sync_buffer->hblank_ch0[ch0_s++]))<<2;
-		temp_word |= ((uint32_t)(sync_buffer->hblank_ch0[ch0_s++]))<<12;
-		temp_word |= (((uint32_t)(sync_buffer->hblank_ch0[ch0_s]))&0x3ff)<<22;
-	}
+	struct sync_buffer_32t *pack_buffer = (struct sync_buffer_32t *)malloc(sizeof(struct sync_buffer_32t));
+
+	allocate_sync_buffer(pack_buffer->hblank_ch0);
+	allocate_sync_buffer(pack_buffer->hblank_ch1);
+	allocate_sync_buffer(pack_buffer->hblank_ch2);
+
+	allocate_sync_buffer(pack_buffer->vblank_en_ch0);
+	allocate_sync_buffer(pack_buffer->vblank_en_ch1);
+	allocate_sync_buffer(pack_buffer->vblank_en_ch2);
+
+	allocate_sync_buffer(pack_buffer->vblank_syn_ch0);
+	allocate_sync_buffer(pack_buffer->vblank_syn_ch1);
+	allocate_sync_buffer(pack_buffer->vblank_syn_ch2);
+
+	allocate_sync_buffer(sync_buffer->vblank_ex_ch0);
+	allocate_sync_buffer(sync_buffer->vblank_ex_ch1);
+	allocate_sync_buffer(sync_buffer->vblank_ex_ch2);
+
+	pack_buffer_single(sync_buffer->hsync_ch0, pack_buffer->hsync_ch0);
+	pack_buffer_single(sync_buffer->hsync_ch1, pack_buffer->hsync_ch1);
+	pack_buffer_single(sync_buffer->hsync_ch1, pack_buffer->hsync_ch2);
+
+	pack_buffer_single(sync_buffer->vsync_en_ch0, pack_buffer->vsync_en_ch0);
+	pack_buffer_single(sync_buffer->vsync_en_ch1, pack_buffer->vsync_en_ch1);
+	pack_buffer_single(sync_buffer->vsync_en_ch2, pack_buffer->vsync_en_ch2);
+
+	pack_buffer_single(sync_buffer->vsync_syn_ch0, pack_buffer->vsync_syn_ch0);
+	pack_buffer_single(sync_buffer->vsync_syn_ch1, pack_buffer->vsync_syn_ch1);
+	pack_buffer_single(sync_buffer->vsync_syn_ch2, pack_buffer->vsync_syn_ch2);
+
+	pack_buffer_single(sync_buffer->vsync_ex_ch0, pack_buffer->vsync_ex_ch0);
+	pack_buffer_single(sync_buffer->vsync_ex_ch1, pack_buffer->vsync_ex_ch1);
+	pack_buffer_single(sync_buffer->vsync_ex_ch2, pack_buffer->vsync_ex_ch2);
+
+	return pack_buffer;
 }
 
 // little endian
