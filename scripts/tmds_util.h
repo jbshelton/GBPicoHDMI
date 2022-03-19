@@ -56,7 +56,7 @@ struct sync_buffer_t
 	uint16_t *vblank_ex_ch2;
 };
 
-struct sync_buffer_32t
+struct sync_buffer_32_t
 {
 	uint32_t *hblank_ch0;
 	uint32_t *hblank_ch1;
@@ -99,15 +99,14 @@ struct infoframe_packet_t
 
 // Function header prototypes
 void free_sync_buffers(struct sync_buffer_t *sync_buffer);
-void free_sync_buffers(struct sync_buffer_32t *sync_buffer);
-void free_infoframes(struct infoframe_header_t *packet_header, struct infoframe_packet_t *info_packet);
-void allocate_sync_buffer(uint16_t *buffer);
-void allocate_sync_buffer(uint32_t *buffer);
-void create_sync_buffers(struct sync_buffer_t *sync_buffer);
-void create_sync_buffers_nodat(struct sync_buffer_t *sync_buffer);
+void free_sync_buffers_32(struct sync_buffer_32_t *sync_buffer);
+void allocate_sync_buffer(uint16_t **buffer);
+void allocate_sync_buffer_32(uint32_t **buffer);
+void create_sync_buffers();
+void create_sync_buffers_nodat();
 
 void pack_buffer_single(uint16_t *in_buffer, uint32_t *out_buffer, int buffer_size);
-struct sync_buffer_32t *pack_sync_buffers(struct sync_buffer_t *sync_buffer);
+void create_sync_files(char *name, struct sync_buffer_t *sync_buffer);
 
 uint16_t tmds_xor(uint8_t color_data);
 uint16_t tmds_xnor(uint8_t color_data);
@@ -116,4 +115,6 @@ void tmds_calc_disparity(struct tmds_pixel_t *tmds_pixel);
 void tmds_pixel_repeat(uint32_t *lut_buf, struct tmds_pixel_t *tmds_pixel);
 
 uint8_t depth_convert(uint8_t c_in);
-void create_avi_infoframe(struct infoframe_header_t *packet_header, struct infoframe_packet_t *info_packet);
+void create_avi_infoframe();
+
+void create_solid_line(char *name, struct tmds_pixel_t *pixel);
