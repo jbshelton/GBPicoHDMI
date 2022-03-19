@@ -84,7 +84,7 @@ struct infoframe_header_t
 	uint16_t terc4_r_header[32];
 	uint32_t terc4_en_header[10]; 
 	// 16 TMDS words per 5 32-bit words; each packet is 32 TMDS words long, or 10 32-bit words
-	// OR with sync_masks[0] for normal hsync and sync_masks[1] for hsync during vsync
+	// OR with sync_masks[1] for normal hsync and sync_masks[0] for hsync during vsync (oops)
 };
 
 struct infoframe_packet_t
