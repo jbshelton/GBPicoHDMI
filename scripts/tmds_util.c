@@ -89,7 +89,7 @@ int main()
     	}
     }
 
-    FILE *pico_tmds_lut = fopen("tmds_lut.bin", "w");
+    FILE *pico_tmds_lut = fopen("tmds_lut.bin", "wb");
     fwrite(tmds_lut, 1, 4096, pico_tmds_lut);
     fclose(pico_tmds_lut);
     free(tmds_pixel);
@@ -98,15 +98,22 @@ int main()
     struct sync_buffer_t *sync_buffer = create_sync_buffers();
 
     struct sync_buffer_32t *pack_buffer = pack_sync_buffers(sync_buffer);
-    free_sync_buffers(sync_buffer);
+    free_sync_buffers(sync_buffer); // Frees the struct too.
+
+    // Now write that to a file.
+    // TODO: create a function that writes all the different buffers to different files.
 
     struct sync_buffer_t *sync_buffer_nodat = create_sync_buffers();
 
     struct sync_buffer_32t *pack_buffer_nodat = pack_sync_buffers(sync_buffer_nodat);
     free_sync_buffers(sync_buffer_nodat);
 
-    // Have another function that interleaves all the 10 bit words from the uint16_t arrays into a uint32_t array
-    // that's perfectly bit-packed, so that 48 10-bit TMDS words fit into 15 32-bit words
+    // Now create the AVI (video) InfoFrame.
+    // TODO: maybe also add the vblank/during vsync variant.
+
+    struct infoframe_header_t *packet_header = (struct infoframe_header_t *)malloc(sizeof(struct infoframe_header_t));
+    struct infoframe_packet_t *info_packet = (struct infoframe_packet_t *)malloc(sizeof(struct infoframe_packet_t));
+    create_avi_infoframe(packet_header, info_packet); // Also writes them to files and frees the structs.
     
     return 0;
 }
@@ -129,6 +136,8 @@ void free_sync_buffers(struct sync_buffer_t *sync_buffer)
 	free(sync_buffer->vblank_ex_ch0);
 	free(sync_buffer->vblank_ex_ch1);
 	free(sync_buffer->vblank_ex_ch2);
+
+	free(sync_buffer);
 }
 
 void free_sync_buffers(struct sync_buffer_32t *sync_buffer)
@@ -148,6 +157,25 @@ void free_sync_buffers(struct sync_buffer_32t *sync_buffer)
 	free(sync_buffer->vblank_ex_ch0);
 	free(sync_buffer->vblank_ex_ch1);
 	free(sync_buffer->vblank_ex_ch2);
+
+	free(sync_buffer);
+}
+
+void free_infoframes(struct infoframe_header_t *packet_header, struct infoframe_packet_t *info_packet)
+{
+	free(packet_header->terc4_r_header);
+	free(packet_header->terc4_en_header);
+
+	free(info_packet->packet_data);
+
+	free(info_packet->terc4_r_ch1);
+	free(info_packet->terc4_r_ch2);
+
+	free(info_packet->terc4_en_ch1);
+	free(info_packet->terc4_en_ch2);
+
+	free(packet_header);
+	free(info_packet);
 }
 
 void allocate_sync_buffer(uint16_t *buffer)
@@ -479,11 +507,12 @@ struct sync_buffer_t *create_sync_buffers_nodat()
 
 // Packs a single channel into a buffer. Used to reduce copy and pasting.
 // Takes pointers to a uint16_t input buffer and uint32_t output buffer.
-void pack_buffer_single(uint16_t *in_buffer, uint32_t *out_buffer)
+// Also requires the buffer size in multiples of 5 words.
+void pack_buffer_single(uint16_t *in_buffer, uint32_t *out_buffer, int buffer_size)
 {
 	int in_pos = 0, out_pos = 0;
 	uint32_t temp_word = 0;
-	for(int i=0; i<12; i++)
+	for(int i=0; i<buffer_size; i++)
 	{
 		temp_word = ((uint32_t)(in_buffer[in_pos++]));
 		temp_word |= ((uint32_t)(in_buffer[in_pos++]))<<10;
@@ -540,21 +569,21 @@ struct sync_buffer_32t *pack_sync_buffers(struct sync_buffer_t *sync_buffer)
 	allocate_sync_buffer(sync_buffer->vblank_ex_ch1);
 	allocate_sync_buffer(sync_buffer->vblank_ex_ch2);
 
-	pack_buffer_single(sync_buffer->hsync_ch0, pack_buffer->hsync_ch0);
-	pack_buffer_single(sync_buffer->hsync_ch1, pack_buffer->hsync_ch1);
-	pack_buffer_single(sync_buffer->hsync_ch1, pack_buffer->hsync_ch2);
+	pack_buffer_single(sync_buffer->hsync_ch0, pack_buffer->hsync_ch0, 12);
+	pack_buffer_single(sync_buffer->hsync_ch1, pack_buffer->hsync_ch1, 12);
+	pack_buffer_single(sync_buffer->hsync_ch1, pack_buffer->hsync_ch2, 12);
 
-	pack_buffer_single(sync_buffer->vsync_en_ch0, pack_buffer->vsync_en_ch0);
-	pack_buffer_single(sync_buffer->vsync_en_ch1, pack_buffer->vsync_en_ch1);
-	pack_buffer_single(sync_buffer->vsync_en_ch2, pack_buffer->vsync_en_ch2);
+	pack_buffer_single(sync_buffer->vsync_en_ch0, pack_buffer->vsync_en_ch0, 12);
+	pack_buffer_single(sync_buffer->vsync_en_ch1, pack_buffer->vsync_en_ch1, 12);
+	pack_buffer_single(sync_buffer->vsync_en_ch2, pack_buffer->vsync_en_ch2, 12);
 
-	pack_buffer_single(sync_buffer->vsync_syn_ch0, pack_buffer->vsync_syn_ch0);
-	pack_buffer_single(sync_buffer->vsync_syn_ch1, pack_buffer->vsync_syn_ch1);
-	pack_buffer_single(sync_buffer->vsync_syn_ch2, pack_buffer->vsync_syn_ch2);
+	pack_buffer_single(sync_buffer->vsync_syn_ch0, pack_buffer->vsync_syn_ch0, 12);
+	pack_buffer_single(sync_buffer->vsync_syn_ch1, pack_buffer->vsync_syn_ch1, 12);
+	pack_buffer_single(sync_buffer->vsync_syn_ch2, pack_buffer->vsync_syn_ch2, 12);
 
-	pack_buffer_single(sync_buffer->vsync_ex_ch0, pack_buffer->vsync_ex_ch0);
-	pack_buffer_single(sync_buffer->vsync_ex_ch1, pack_buffer->vsync_ex_ch1);
-	pack_buffer_single(sync_buffer->vsync_ex_ch2, pack_buffer->vsync_ex_ch2);
+	pack_buffer_single(sync_buffer->vsync_ex_ch0, pack_buffer->vsync_ex_ch0, 12);
+	pack_buffer_single(sync_buffer->vsync_ex_ch1, pack_buffer->vsync_ex_ch1, 12);
+	pack_buffer_single(sync_buffer->vsync_ex_ch2, pack_buffer->vsync_ex_ch2, 12);
 
 	return pack_buffer;
 }
@@ -755,4 +784,79 @@ uint8_t depth_convert(uint8_t c_in)
 		c_out = c_out^0x01;
 	}
 	return c_out;
+}
+
+void create_avi_infoframe(struct infoframe_header_t *packet_header, struct infoframe_packet_t *info_packet)
+{
+	packet_header->terc4_r_header = (uint16_t *)malloc(32*sizeof(uint16_t));
+	packet_header->terc4_en_header = (uint32_t *)malloc(10*sizeof(uint32_t));
+	info_packet->terc4_r_ch1 = (uint16_t *)malloc(32*sizeof(uint16_t));
+	info_packet->terc4_en_ch1 = (uint32_t *)malloc(10*sizeof(uint32_t));
+	info_packet->terc4_r_ch2 = (uint16_t *)malloc(32*sizeof(uint16_t));
+	info_packet->terc4_en_ch2 = (uint32_t *)malloc(10*sizeof(uint32_t));
+
+	int i = 0;
+	packet_header->packet_type = AVI_PACKET_TYPE;
+	packet_header->version = HDMI_VERSION;
+	packet_header->packet_length = AVI_PACKET_LENGTH;
+	packet_header->header_checksum = AVI_HEADER_CHECKSUM;
+
+	info_packet->packet_checksum = 0x02; // VIC
+	for(i=0; i<31; i++)
+	{
+		info_packet->packet_data[i] = 0;
+	}
+	info_packet->packet_data[3] = 0x02;
+
+
+	uint8_t header_byte = packet_header->packet_type;
+	for(i=0; i<8; i++)
+	{
+		packet_header->terc4_r_header[i] = terc4_table[((header_byte&0x01)<<2)|sync_masks[1]];
+		header_byte = header_byte>>1;
+	}
+	header_byte = packet_header->version;
+	for(i=i; i<(i+8); i++)
+	{
+		packet_header->terc4_r_header[i] = terc4_table[((header_byte&0x01)<<2)|sync_masks[1]];
+		header_byte = header_byte>>1;
+	}
+	header_byte = packet_header->packet_length;
+	for(i=i; i<(i+8); i++)
+	{
+		packet_header->terc4_r_header[i] = terc4_table[((header_byte&0x01)<<2)|sync_masks[1]];
+		header_byte = header_byte>>1;
+	}
+	header_byte = packet_header->header_checksum;
+	for(i=i; i<(i+8); i++)
+	{
+		packet_header->terc4_r_header[i] = terc4_table[((header_byte&0x01)<<2)|sync_masks[1]];
+		header_byte = header_byte>>1;
+	}
+
+	info_packet->terc4_r_ch1[0] = terc4_table[((info_packet->packet_checksum)&0x0f)];
+	info_packet->terc4_r_ch2[0] = terc4_table[((info_packet->packet_checksum)&0xf0)>>4];
+	for(int i=1; i<32; i++)
+	{
+		info_packet->terc4_r_ch1[i] = terc4_table[((info_packet->packet_data[i-1])&0x0f)];
+		info_packet->terc4_r_ch2[i] = terc4_table[((info_packet->packet_data[i-1])&0xf0)>>4];
+	}
+
+	pack_buffer_single(packet_header->terc4_r_header, packet_header->terc4_en_header, 2);
+	pack_buffer_single(info_packet->terc4_r_ch1, info_packet->terc4_en_ch1, 2);
+	pack_buffer_single(info_packet->terc4_r_ch2, info_packet->terc4_en_ch2, 2);
+
+	FILE *terc4_header = fopen("terc4_hblank_ch0.bin", "wb");
+	fwrite(packet_header->terc4_en_header, 4, 10, terc4_header);
+	fclose(terc4_header);
+
+	FILE *terc4_ch1 = fopen("terc4_hblank_ch1.bin", "wb");
+	fwrite(info_packet->terc4_en_ch1, 4, 10, terc4_ch1);
+	fclose(terc4_ch1);
+
+	FILE *terc4_ch2 = fopen("terc4_hblank_ch2.bin", "wb");
+	fwrite(info_packet->terc4_en_ch2, 4, 10, terc4_ch2);
+	fclose(terc4_ch2);
+
+	free_infoframes(packet_header, info_packet);
 }

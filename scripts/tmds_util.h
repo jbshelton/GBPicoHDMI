@@ -3,6 +3,7 @@
 
 	Various definitions/declarations of values, structs, and function prototypes for tmds_util.c to make things less messy.
 */
+
 #define H_ACTIVE 720
 #define H_FRONT 32
 #define H_PULSE 64
@@ -14,6 +15,17 @@
 #define V_PULSE 8
 #define V_BACK 38
 #define V_TOTAL 539
+
+#define AVI_PACKET_TYPE 0x82
+#define HDMI_VERSION 0x02
+#define AVI_PACKET_LENGTH 13 // 0x0D
+#define AVI_HEADER_CHECKSUM 0x91
+
+// The VIC bits of the AVI InfoFrame data byte 4 are either 0x02 or 0x03
+// because the active video is technically 720x480p 60Hz.
+// All other bytes should be set to zero.
+// Therefore, if the VIC bits are actually used, the checksum should be
+// 0x02 or 0x03.
 
 struct tmds_pixel_t
 {
@@ -63,15 +75,38 @@ struct sync_buffer_32t
 	uint32_t *vblank_ex_ch2;
 };
 
+struct infoframe_header_t
+{
+	uint8_t packet_type;
+	uint8_t version;
+	uint8_t packet_length;
+	uint8_t header_checksum;
+	uint16_t terc4_r_header[32];
+	uint32_t terc4_en_header[10]; 
+	// 16 TMDS words per 5 32-bit words; each packet is 32 TMDS words long, or 10 32-bit words
+	// OR with sync_masks[0] for normal hsync and sync_masks[1] for hsync during vsync
+};
+
+struct infoframe_packet_t
+{
+	uint8_t packet_checksum;
+	uint8_t packet_data[31];
+	uint16_t terc4_r_ch1[32]; // Channel 1 gets lower nibble
+	uint16_t terc4_r_ch2[32]; // Channel 2 gets higher nibble
+	uint32_t terc4_en_ch1[10]; // r = unpacked data, en = packed data
+	uint32_t terc4_en_ch2[10];
+};
+
 // Function header prototypes
 void free_sync_buffers(struct sync_buffer_t *sync_buffer);
 void free_sync_buffers(struct sync_buffer_32t *sync_buffer);
+void free_infoframes(struct infoframe_header_t *packet_header, struct infoframe_packet_t *info_packet);
 void allocate_sync_buffer(uint16_t *buffer);
 void allocate_sync_buffer(uint32_t *buffer);
 void create_sync_buffers(struct sync_buffer_t *sync_buffer);
 void create_sync_buffers_nodat(struct sync_buffer_t *sync_buffer);
 
-void pack_buffer_single(uint16_t *in_buffer, uint32_t *out_buffer)
+void pack_buffer_single(uint16_t *in_buffer, uint32_t *out_buffer, int buffer_size);
 struct sync_buffer_32t *pack_sync_buffers(struct sync_buffer_t *sync_buffer);
 
 uint16_t tmds_xor(uint8_t color_data);
@@ -81,3 +116,4 @@ void tmds_calc_disparity(struct tmds_pixel_t *tmds_pixel);
 void tmds_pixel_repeat(uint32_t *lut_buf, struct tmds_pixel_t *tmds_pixel);
 
 uint8_t depth_convert(uint8_t c_in);
+void create_avi_infoframe(struct infoframe_header_t *packet_header, struct infoframe_packet_t *info_packet);
