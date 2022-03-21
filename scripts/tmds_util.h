@@ -81,8 +81,8 @@ struct infoframe_header_t
 	uint8_t version;
 	uint8_t packet_length;
 	uint8_t header_checksum;
-	uint16_t terc4_r_header[32];
-	uint32_t terc4_en_header[10]; 
+	uint16_t *terc4_r_header; //32*sizeof(uint16_t)
+	uint32_t *terc4_en_header; //10*sizeof(uint32_t)
 	// 16 TMDS words per 5 32-bit words; each packet is 32 TMDS words long, or 10 32-bit words
 	// OR with sync_masks[1] for normal hsync and sync_masks[0] for hsync during vsync (oops)
 };
@@ -90,11 +90,11 @@ struct infoframe_header_t
 struct infoframe_packet_t
 {
 	uint8_t packet_checksum;
-	uint8_t packet_data[31];
-	uint16_t terc4_r_ch1[32]; // Channel 1 gets lower nibble
-	uint16_t terc4_r_ch2[32]; // Channel 2 gets higher nibble
-	uint32_t terc4_en_ch1[10]; // r = unpacked data, en = packed data
-	uint32_t terc4_en_ch2[10];
+	uint8_t *packet_data; // malloc(31)
+	uint16_t *terc4_r_ch1; // Channel 1 gets lower nibble, malloc(32*sizeof(uint16_t))
+	uint16_t *terc4_r_ch2; // Channel 2 gets higher nibble
+	uint32_t *terc4_en_ch1; // r = unpacked data, en = packed data malloc(10*sizeof(uint16_t))
+	uint32_t *terc4_en_ch2;
 };
 
 // Function header prototypes

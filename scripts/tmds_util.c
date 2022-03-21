@@ -2,10 +2,9 @@
 	tmds_util.c
 
 	This program generates the TMDS output data/lookup tables for the Raspberry Pi Pico/RP2040.
-	And various other utilities. (Coming soon)
+	And various other utilities.
 
 	TO DO:
-	-Add HDMI InfoFrame generation
 	-Add TMDS audio LUT generation (if necessary)
 
 	The HDMI InfoFrame buffers will still have the standard sync data tacked onto them,
@@ -68,8 +67,7 @@ const uint8_t sync_masks[] =
 	0b00001010
 };
 
-// Creates the TMDS lookup table, where each entry has 3 separate pixels and an output disparity value.
-// Addressed by disparity<<6|color_data<<1 for the TMDS data, and the entry after that is the disparity.
+// Creates the TMDS lookup table, where each entry has 3 separate pixels and an output disparity value (stored in 2 separate words.)
 int main()
 {
     uint32_t *tmds_lut = (uint32_t *)malloc(0x400*sizeof(uint32_t));
@@ -94,28 +92,26 @@ int main()
     fclose(pico_tmds_lut);
     free(tmds_pixel);
     free(tmds_lut);
-    printf("Successfully created TMDS LUT\n");
     // These functions create the sync buffers with the null packets and with no packets.
     // They do everything automatically, including packing the data and writing it to files.
     create_sync_buffers();
     create_sync_buffers_nodat();
-    printf("Successfully created sync buffers\n");
     // Now create the AVI (video) InfoFrame.
     // Creates both hsync and during vsync variants.
 
     create_avi_infoframe(); // Also writes them to files and frees the structs.
-    printf("Successfully created InfoFrame\n");
     // Create a solid line that can be used to get a solid color on the screen.
     // Black, white, red, green, blue, magenta, cyan, or yellow can be made with different combinations.
     // The create_solid_line() function also writes it to a file.
     struct tmds_pixel_t *solid_pixel = (struct tmds_pixel_t *)malloc(sizeof(struct tmds_pixel_t));
     solid_pixel->color_data_5b = 0x00;
-    char pixel_name[32];
+    char *pixel_name = (char *)malloc(32);
     sprintf(pixel_name, "pixel_0x00.bin");
     create_solid_line(pixel_name, solid_pixel);
     solid_pixel->color_data_5b = 0x1f;
     sprintf(pixel_name, "pixel_0xff.bin");
     create_solid_line(pixel_name, solid_pixel);
+    free(pixel_name);
     free(solid_pixel);
     
     return 0;
@@ -141,14 +137,11 @@ void free_sync_buffers(struct sync_buffer_t *sync_buffer)
 	free(sync_buffer->vblank_ex_ch2);
 
 	free(sync_buffer);
-	printf("Freeing normal sync buffer doesn't fail\n");
 }
 
 void free_sync_buffers_32(struct sync_buffer_32_t *sync_buffer)
 {
-	printf("Freeing mem at address %p\n", sync_buffer->hblank_ch0);
 	free(sync_buffer->hblank_ch0);
-	printf("Freeing mem at address %p (fails here)\n", sync_buffer->hblank_ch1);
 	free(sync_buffer->hblank_ch1);
 	free(sync_buffer->hblank_ch2);
 
@@ -165,28 +158,7 @@ void free_sync_buffers_32(struct sync_buffer_32_t *sync_buffer)
 	free(sync_buffer->vblank_ex_ch2);
 
 	free(sync_buffer);
-	printf("But freeing the other sync buffers fails.\n");
 }
-
-/*
-// See create_avi_infoframe()
-void free_infoframes(struct infoframe_header_t *packet_header, struct infoframe_packet_t *info_packet)
-{
-	free(packet_header->terc4_r_header);
-	free(packet_header->terc4_en_header);
-
-	free(info_packet->packet_data);
-
-	free(info_packet->terc4_r_ch1);
-	free(info_packet->terc4_r_ch2);
-
-	free(info_packet->terc4_en_ch1);
-	free(info_packet->terc4_en_ch2);
-
-	free(packet_header);
-	free(info_packet);
-}
-*/
 
 void allocate_sync_buffer(uint16_t **buffer)
 {
@@ -197,7 +169,7 @@ void allocate_sync_buffer(uint16_t **buffer)
 
 void allocate_sync_buffer_32(uint32_t **buffer)
 {
-	*buffer = (uint32_t *)malloc(((H_TOTAL-H_ACTIVE)*10)/32);
+	*buffer = (uint32_t *)malloc((((H_TOTAL-H_ACTIVE)*10)/32)*sizeof(uint32_t)); // Whoops! Initially forgot to put the multiplication factor there.
 
 	return;
 }
@@ -553,7 +525,6 @@ void pack_buffer_single(uint16_t *in_buffer, uint32_t *out_buffer, int buffer_si
 		temp_word |= (((uint32_t)(in_buffer[in_pos]))&0x3ff)<<22;
 		out_buffer[out_pos++] = temp_word;
 	}
-
 	return;
 }
 
@@ -567,9 +538,7 @@ void create_sync_files(char *name, struct sync_buffer_t *sync_buffer)
 	struct sync_buffer_32_t *pack_buffer = (struct sync_buffer_32_t *)malloc(sizeof(struct sync_buffer_32_t));
 
 	allocate_sync_buffer_32(&(pack_buffer->hblank_ch0));
-	printf("Allocated buffer at address %p\n", pack_buffer->hblank_ch0);
-	allocate_sync_buffer_32(&(pack_buffer->hblank_ch1)); // Allocation is successful, but it can't be freed for some reason
-	printf("Allocated buffer at address %p\n", pack_buffer->hblank_ch1);
+	allocate_sync_buffer_32(&(pack_buffer->hblank_ch1));
 	allocate_sync_buffer_32(&(pack_buffer->hblank_ch2));
 
 	allocate_sync_buffer_32(&(pack_buffer->vblank_en_ch0));
@@ -584,6 +553,7 @@ void create_sync_files(char *name, struct sync_buffer_t *sync_buffer)
 	allocate_sync_buffer_32(&(pack_buffer->vblank_ex_ch1));
 	allocate_sync_buffer_32(&(pack_buffer->vblank_ex_ch2));
 
+	// 16 TMDS words fit into 5 32-bit words. There are 192 pixels during hblank in total, so the buffers are 60 words each.
 	pack_buffer_single(sync_buffer->hblank_ch0, pack_buffer->hblank_ch0, 12);
 	pack_buffer_single(sync_buffer->hblank_ch1, pack_buffer->hblank_ch1, 12);
 	pack_buffer_single(sync_buffer->hblank_ch1, pack_buffer->hblank_ch2, 12);
@@ -808,29 +778,6 @@ void tmds_calc_disparity(struct tmds_pixel_t *tmds_pixel)
 	}
 	tmds_pixel->disparity = this_disparity;
 	tmds_pixel->tmds_data = tmds_word;
-	
-	// For debugging purposes only
-	/*
-	if(this_disparity>15 || this_disparity<-16)
-	{
-		printf("Invalid disparity value: %d\n", this_disparity);
-	}
-	*/
-	/*
-	bool valid = true;
-	for(int i=0; i<6; i++)
-	{
-		if(tmds_word==control_states[i])
-		{
-			valid = false;
-		}
-	}
-	if(valid==false)
-	{
-		invalid_states++;
-		printf("Invalid states: %d\n", invalid_states);
-	}
-	*/
 
 	return;
 }
@@ -847,14 +794,6 @@ void tmds_pixel_repeat(uint32_t *lut_buf, struct tmds_pixel_t *tmds_pixel)
 	tmds_calc_disparity(tmds_pixel);
 	lut_buf[(((tmds_pixel->color_data_5b)<<1)|((((uint32_t)(dispy+8))&0x0f)<<6))&0x3fe] |= (uint32_t)((tmds_pixel->tmds_data)<<20);
 	lut_buf[((((tmds_pixel->color_data_5b)<<1)|((((uint32_t)(dispy+8))&0x0f)<<6))&0x3fe)+1] = ((uint32_t)((tmds_pixel->disparity)+8))<<6;
-	
-	// For debugging purposes only
-	/*
-	if((tmds_pixel->disparity)<-8 || (tmds_pixel->disparity)>7)
-	{
-		printf("Invalid final disparity value: %d\n", tmds_pixel->disparity);
-	}
-	*/
 
 	return;
 }
@@ -876,17 +815,18 @@ void create_avi_infoframe()
 	struct infoframe_header_t *packet_header = (struct infoframe_header_t *)malloc(sizeof(struct infoframe_header_t));
 	struct infoframe_header_t *packet_header_v = (struct infoframe_header_t *)malloc(sizeof(struct infoframe_header_t));
     struct infoframe_packet_t *info_packet = (struct infoframe_packet_t *)malloc(sizeof(struct infoframe_packet_t));
-    /*
-    // See below
+
 	packet_header->terc4_r_header = (uint16_t *)malloc(32*sizeof(uint16_t));
 	packet_header->terc4_en_header = (uint32_t *)malloc(10*sizeof(uint32_t));
+	packet_header_v->terc4_r_header = (uint16_t *)malloc(32*sizeof(uint16_t));
+	packet_header_v->terc4_en_header = (uint32_t *)malloc(10*sizeof(uint32_t));
+
 	info_packet->terc4_r_ch1 = (uint16_t *)malloc(32*sizeof(uint16_t));
 	info_packet->terc4_en_ch1 = (uint32_t *)malloc(10*sizeof(uint32_t));
 	info_packet->terc4_r_ch2 = (uint16_t *)malloc(32*sizeof(uint16_t));
 	info_packet->terc4_en_ch2 = (uint32_t *)malloc(10*sizeof(uint32_t));
-	*/
+	info_packet->packet_data  = (uint8_t *)malloc(31);
 
-	int i = 0;
 	packet_header->packet_type = AVI_PACKET_TYPE;
 	packet_header->version = HDMI_VERSION;
 	packet_header->packet_length = AVI_PACKET_LENGTH;
@@ -898,39 +838,39 @@ void create_avi_infoframe()
 	packet_header_v->header_checksum = AVI_HEADER_CHECKSUM;
 
 	info_packet->packet_checksum = 0x02; // VIC
-	for(i=0; i<31; i++)
+	for(int i=0; i<31; i++)
 	{
 		info_packet->packet_data[i] = 0;
 	}
 	info_packet->packet_data[3] = 0x02;
 
-
 	uint8_t header_byte = packet_header->packet_type;
-	for(i=0; i<8; i++)
+	int j = 0;
+	for(int i=0; i<8; i++)
 	{
-		packet_header->terc4_r_header[i] = terc4_table[((header_byte&0x01)<<2)|sync_masks[1]];
-		packet_header_v->terc4_r_header[i] = terc4_table[((header_byte&0x01)<<2)|sync_masks[0]];
+		packet_header->terc4_r_header[j] = terc4_table[((header_byte&0x01)<<2)|sync_masks[1]];
+		packet_header_v->terc4_r_header[j++] = terc4_table[((header_byte&0x01)<<2)|sync_masks[0]];
 		header_byte = header_byte>>1;
 	}
 	header_byte = packet_header->version;
-	for(i=i; i<(i+8); i++)
+	for(int i=0; i<8; i++)
 	{
-		packet_header->terc4_r_header[i] = terc4_table[((header_byte&0x01)<<2)|sync_masks[1]];
-		packet_header_v->terc4_r_header[i] = terc4_table[((header_byte&0x01)<<2)|sync_masks[0]];
+		packet_header->terc4_r_header[j] = terc4_table[((header_byte&0x01)<<2)|sync_masks[1]];
+		packet_header_v->terc4_r_header[j++] = terc4_table[((header_byte&0x01)<<2)|sync_masks[0]];
 		header_byte = header_byte>>1;
 	}
 	header_byte = packet_header->packet_length;
-	for(i=i; i<(i+8); i++)
+	for(int i=0; i<8; i++)
 	{
-		packet_header->terc4_r_header[i] = terc4_table[((header_byte&0x01)<<2)|sync_masks[1]];
-		packet_header_v->terc4_r_header[i] = terc4_table[((header_byte&0x01)<<2)|sync_masks[0]];
+		packet_header->terc4_r_header[j] = terc4_table[((header_byte&0x01)<<2)|sync_masks[1]];
+		packet_header_v->terc4_r_header[j++] = terc4_table[((header_byte&0x01)<<2)|sync_masks[0]];
 		header_byte = header_byte>>1;
 	}
 	header_byte = packet_header->header_checksum;
-	for(i=i; i<(i+8); i++)
+	for(int i=0; i<8; i++)
 	{
-		packet_header->terc4_r_header[i] = terc4_table[((header_byte&0x01)<<2)|sync_masks[1]];
-		packet_header_v->terc4_r_header[i] = terc4_table[((header_byte&0x01)<<2)|sync_masks[0]];
+		packet_header->terc4_r_header[j] = terc4_table[((header_byte&0x01)<<2)|sync_masks[1]];
+		packet_header_v->terc4_r_header[j++] = terc4_table[((header_byte&0x01)<<2)|sync_masks[0]];
 		header_byte = header_byte>>1;
 	}
 
@@ -963,11 +903,20 @@ void create_avi_infoframe()
 	fwrite(info_packet->terc4_en_ch2, 4, 10, terc4_ch2);
 	fclose(terc4_ch2);
 
-	//free_infoframes(packet_header, info_packet);
-	// Not sure, but I think just free() is okay since the sizes of the arrays are pre-defined in the struct
+	free(packet_header->terc4_r_header);
+	free(packet_header->terc4_en_header);
 	free(packet_header);
-	free(info_packet);
+
+	free(packet_header_v->terc4_r_header);
+	free(packet_header_v->terc4_en_header);
 	free(packet_header_v);
+
+	free(info_packet->terc4_r_ch1);
+	free(info_packet->terc4_en_ch1);
+	free(info_packet->terc4_r_ch2);
+	free(info_packet->terc4_en_ch2);
+	free(info_packet->packet_data);
+	free(info_packet);
 
 	return;
 }
