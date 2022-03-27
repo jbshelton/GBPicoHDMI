@@ -10,6 +10,11 @@ I got my info on color correction from [this site](https://near.sh/articles/vide
 
 ---
 
+### Helpful info I missed initially
+One of the things I missed during my research was BCH encoding, which is done to data transmitted during the data island periods before being encoded to TERC4 \(all of which I'll talk about later\.\) Someone already beat me to the punch with sending audio over HDMI with the Raspberry Pi Pico, but that just means I can benefit from the work they did\! [This repository](https://github.com/shuichitakano/pico_lib) has most of the info I missed in the `dvi` folder\. Specifically, `data_packet.cpp`\.
+
+---
+
 ### The Difference Between VGA and DVI
 DVI is essentially a digital version of VGA with support for higher resolutions because of how it is encoded to support higher pixel clocks, as well as some changes to how syncing works in order to work with that transmission method\. The difference specifically being that 8\-bit color values are encoded to 10 bits, and a disparity variable is used to keep track of the difference between the number of zeroes and ones transmitted so that the DC offset of the signal can be kept to a minimum\. In addition to that, there are control signals/values that are transmitted at the end of the visible data along with a data enable signal so the sink knows it's time to listen for the sync signals\. The sync signals also have tighter timing requirements; sync signal transitions need to occur on the same pixel clock\. More details can be found within `tmds_util.c`\.
 
@@ -63,6 +68,12 @@ HDMI uses an encoding method called TERC4 \(short for **T**MDS **E**rror **R**ed
 | 0b1101 | 0b1001110001 |
 | 0b1110 | 0b0101100011 |
 | 0b1111 | 0b1011000011 |
+
+However, before the data can be TERC4 encoded, it has to be encoded with BCH error correction\. This splits each data island packet into 4 subpackets, each containing 56 bits of data and 8 bits of BCH ECC parity bits\. These are then put into BCH blocks; block 0 is mapped to bit 0 of TMDS channels 1 and 2, so that 64 bits of BCH block 0 are transferred over 32 pixels \(little\-endian, where bit 0 goes to channel 1 and bit 1 goes to channel 2 and so on\.\) BCH blocks 1\-3 are mapped in a similar manner, to bits 1\-3 of channels 1 and 2\.
+The parity bits come at the end of each packet, after all the subpackets\- subpacket 0 bytes 0 through 6 are packet bytes 0 to 6, subpacket 1 is mapped to packet bytes 7 to 13, and so on, until packet byte 27\.
+TL;DR data packets have 4 BCH blocks, comprising 7 data bytes and 8 parity bits each; the data bytes are sent first in the data packet, and the BCH parity bits are sent at the end\.
+
+The HDMI 1\.3a specification document doesn't provide easily decipherable info on how to encode the BCH bytes, so I'll just refer to the repository that I mentioned at the beginning of this document\.
 
 ---
 
@@ -211,7 +222,7 @@ In order to implement really *any* of the concepts listed here in programming, t
 
 ---
 
-#### Part 1: DMA
+### Part 1: DMA
 To start, let's have a look at the DMA functions\. Here are the ones that stuck out to me as the most important \(not really in any particular order\):
 - `dma_channel_claim (uint channel)`
 - `dma_channel_set_read_addr (uint channel, const volatile void *read_addr, bool trigger)` to set a channel's read address\.
@@ -259,7 +270,7 @@ To recap, here's the functions of every DMA channel:
 
 ---
 
-#### Part 2: System Clock and Core Voltage
+### Part 2: System Clock and Core Voltage
 Since the Pico needs to run at 294MHz in order to output an HDMI signal, let's look at how to configure the system clock\. Here are the functions that I'm going to use:
 - `check_sys_clock_khz (uint32_t freq_khz, uint *vco_freq_out, uint *post_div1_out, uint *post_div2_out)` checks to see if a system clock frequency is valid, along with pointers to variables which will store the VCO frequency and dividers if it is valid\. These values can then be used to configure the system clock\.
 - `set_sys_clock_pll (uint32_t vco_freq, uint post_div1, uint post_div2)` to set the system's PLL directly\. I'll be using this in conjunction with `check_sys_clock_khz`\.
@@ -268,7 +279,7 @@ In addition to doing that, the core voltage needs to be changed in order to succ
 
 ---
 
-#### Part 3: GPIO and PIO Configuration
+### Part 3: GPIO and PIO Configuration
 The basic concept of GPIO is to either set the pin modes to input or output, and if it's an input optionally configure internal pull\-up or pull\-down resistors and then read from a register to get the pin states, and if it's an output, write to a register to set the pin outputs\. However, I there's a separate step in the process required for PIO connection to GPIO on the CPU side\- just set the pin function of the GPIOs that will be used by the PIO either to `GPIO_FUNC_PIO0` or `GPIO_FUNC_PIO1`\. Here are the relevant functions related to GPIO:
 - `gpio_set_function (uint gpio, enum gpio_function fn)` to set the function of a specific GPIO\.
 - `gpio_set_pulls (uint gpio, bool up, bool down)` to set the pulls of a specific GPIO\.
@@ -282,12 +293,17 @@ PIOs are very versatile, because 'in', 'out', 'set' and 'side\-set' pins can map
 
 ---
 
-#### Part 4: Interrupts and PWM
+### Part 4: Interpolator
+Apparently the RP2040 has this useful piece of hardware called an interpolator, which comprises of 2 lanes which each have an accumulator \(which can add numbers,\) a right\-shift unit, a mask unit, and sign extension \(which fills the top bits with 0 or 1 based on the current MSb\.\) Since creating the lookup table address for a pixel requires a shift and mask, the interpolator is perfect for it\. The only action required by the processor is to left shift the output pixel once and OR it with the current disparity value\. In addition, the interpolator could be used
+
+---
+
+### Part 5: Interrupts and PWM
 TODO
 
 ---
 
-#### Part : ADC
+### Part : ADC
 TODO
 
 ---
